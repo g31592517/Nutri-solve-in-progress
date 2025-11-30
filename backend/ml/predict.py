@@ -51,6 +51,17 @@ def load_food_database():
     """
     try:
         # Load processed data (includes all foods with computed features)
+    
+    # Prepare features for prediction
+    numerical_features = [
+        'calories', 'protein_g', 'fat_g', 'carbs_g', 'fiber_g', 'sugars_g',
+        'sodium_mg', 'vitamin_a_iu', 'vitamin_c_mg', 'calcium_mg', 'iron_mg',
+        'potassium_mg', 'magnesium_mg', 'zinc_mg', 'phosphorus_mg',
+        'cost_per_serving', 'nutrient_density', 'sugar_to_carb_ratio'
+    ]
+    categorical_features = ['food_category']
+    binary_features = ['is_glutenfree', 'is_nutfree', 'is_vegan']
+    
         df = pd.read_csv(ML_DIR / 'processed_data.csv')
         return df
     except FileNotFoundError:
