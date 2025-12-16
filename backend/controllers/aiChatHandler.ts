@@ -14,68 +14,54 @@ const __dirname = dirname(__filename);
 
 const TfIdf = natural.TfIdf;
 
+// ML Pipeline Paths
+const ML_DIR = path.join(__dirname, '../ml');
+const PROCESSED_DATA_PATH = path.join(ML_DIR, 'processed_data.csv');
+const TRAINING_METRICS_PATH = path.join(ML_DIR, 'training_metrics.json');
+
 // Initialize Ollama client with optimized settings
 const ollama = new Ollama({
   host: process.env.OLLAMA_HOST || 'http://localhost:11434',
 });
 
-// Model fallback configuration (fastest to slowest)
-const MODELS = [
-  'gemma:2b',      // Fastest, smaller model
-  'phi3:mini',     // Medium speed, good quality
-];
-
-let currentModelIndex = 0;
-
-// Chat model warm-up and optimization
+// Chat model configuration - using gemma:2b for speed
+const CHAT_MODEL = 'gemma:2b';
 let isChatModelWarmedUp = false;
-
-// Get current model with fallback (force gemma:2b for speed)
-const getCurrentModel = () => {
-  return 'gemma:2b'; // Force fastest model
-};
 
 // Warm up the chat model on startup
 const warmUpChatModel = async () => {
   if (isChatModelWarmedUp) return;
   
-  const model = getCurrentModel();
   try {
-    console.log(`[Chat] Warming up ${model} model for chat...`);
+    console.log(`[Chat] Warming up ${CHAT_MODEL} model...`);
     const startTime = Date.now();
     
     await ollama.chat({
-      model,
+      model: CHAT_MODEL,
       messages: [{ role: 'user', content: 'Hi' }],
       options: {
         num_predict: 5,
         temperature: 0.1,
-        num_ctx: 512, // Minimal context for warm-up
+        num_ctx: 512,
       },
     });
     
     const duration = Date.now() - startTime;
-    console.log(`[Chat] Chat model ${model} warmed up in ${duration}ms`);
+    console.log(`[Chat] Model warmed up in ${duration}ms`);
     isChatModelWarmedUp = true;
   } catch (error: any) {
-    console.warn(`[Chat] Chat model ${model} warm-up failed:`, error.message);
-    
-    // Try fallback model
-    if (currentModelIndex < MODELS.length - 1) {
-      currentModelIndex++;
-      console.log(`[Chat] Trying fallback model: ${MODELS[currentModelIndex]}`);
-      isChatModelWarmedUp = false;
-      return warmUpChatModel();
-    }
+    console.warn(`[Chat] Model warm-up failed:`, error.message);
   }
 };
 
 // Initialize chat warm-up
 warmUpChatModel();
 
-// Food data storage
+// Food data storage (from ML pipeline)
 let foods: any[] = [];
 let tfidf: any = null;
+let mlMetrics: any = null;
+let mlFeatures: string[] = [];
 
 // OPTIMIZATION 3: Enhanced LRU Cache for faster chat responses
 const responseCache = new LRUCache<string, string>({
@@ -92,72 +78,62 @@ const quickResponseCache = new LRUCache<string, string>({
 // OPTIMIZATION 2: Concurrency limiter using p-limit (prevents OOM/swapping)
 const limit = pLimit(1); // Max 1 concurrent request to prevent memory issues
 
-// Load USDA dataset
+// Load ML processed dataset with fitness scores
 export async function loadUSDAData() {
-  const dataDir = path.join(__dirname, '../data');
-  const dataPath = path.join(dataDir, 'usda-foods.csv');
-  const processedPath = path.join(dataDir, 'processed-usda.json');
-
-  // Try to load from processed JSON first
-  if (fs.existsSync(processedPath)) {
-    try {
-      const data = fs.readFileSync(processedPath, 'utf-8');
-      foods = JSON.parse(data);
-      console.log(`[Chat] Loaded ${foods.length} foods from processed JSON`);
-      buildTfIdf();
-      return;
-    } catch (err) {
-      console.warn('[Chat] Failed to load processed JSON, falling back to CSV');
-    }
-  }
-
-  // Load from CSV
-  if (!fs.existsSync(dataPath)) {
-    console.warn('[Chat] USDA dataset not found. Run download script first.');
+  console.log('[Chat] Loading ML processed data...');
+  
+  // Load processed foods from ML pipeline
+  if (!fs.existsSync(PROCESSED_DATA_PATH)) {
+    console.warn('[Chat] ML processed data not found. Run: python backend/ml/preprocess.py');
     foods = [];
     return;
   }
 
   return new Promise<void>((resolve, reject) => {
     const rows: any[] = [];
-    fs.createReadStream(dataPath)
+    fs.createReadStream(PROCESSED_DATA_PATH)
       .pipe(csv())
       .on('data', (row) => {
+        // Load foods with ML features and fitness labels
         const food = {
-          fdc_id: row.fdc_id || row.FDC_ID || row.fdcid || null,
-          description:
-            row.description ||
-            row.food_description ||
-            row.SNDescription ||
-            row.food ||
-            row.name ||
-            null,
-          food_category:
-            row.food_category || row.food_category_id || row.category || null,
-          nutrients: row.nutrient || row.nutrients || null,
+          food_name: row.food_name,
+          category: row.category,
+          // Raw nutrients
+          calories: parseFloat(row.calories) || 0,
+          protein: parseFloat(row.protein) || 0,
+          carbs: parseFloat(row.carbs) || 0,
+          fat: parseFloat(row.fat) || 0,
+          iron: parseFloat(row.iron) || 0,
+          vitamin_c: parseFloat(row.vitamin_c) || 0,
+          // ML engineered features
+          nutrient_density: parseFloat(row.nutrient_density) || 0,
+          protein_ratio: parseFloat(row.protein_ratio) || 0,
+          carb_fat_ratio: parseFloat(row.carb_fat_ratio) || 0,
+          energy_density: parseFloat(row.energy_density) || 0,
+          micronutrient_score: parseFloat(row.micronutrient_score) || 0,
+          // Binary flags
+          is_glutenfree: parseInt(row.is_glutenfree) || 0,
+          is_nutfree: parseInt(row.is_nutfree) || 0,
+          is_vegan: parseInt(row.is_vegan) || 0,
+          // ML fitness label (0=unfit, 1=fit)
+          fit: parseInt(row.fit) || 0,
         };
-        if (food.description) {
+        if (food.food_name) {
           rows.push(food);
         }
       })
       .on('end', () => {
-        // Deduplicate and limit
-        const seen = new Set<string>();
-        foods = rows.filter((f) => {
-          const key = f.description?.toLowerCase();
-          if (!key || seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        }).slice(0, 300);
-
-        console.log(`[Chat] Loaded ${foods.length} foods from CSV`);
-
-        // Save processed data
+        foods = rows;
+        console.log(`[Chat] Loaded ${foods.length} foods from ML pipeline`);
+        console.log(`[Chat] ML features available: nutrient_density, protein_ratio, micronutrient_score, etc.`);
+        
+        // Load ML training metrics
         try {
-          fs.writeFileSync(processedPath, JSON.stringify(foods, null, 2));
-          console.log('[Chat] Saved processed data to JSON');
+          const metricsData = fs.readFileSync(TRAINING_METRICS_PATH, 'utf-8');
+          mlMetrics = JSON.parse(metricsData);
+          console.log(`[Chat] Loaded ML metrics: F1=${(mlMetrics.metrics.test.f1_macro * 100).toFixed(1)}%, Accuracy=${(mlMetrics.metrics.test.accuracy * 100).toFixed(1)}%`);
         } catch (err) {
-          console.warn('[Chat] Could not save processed JSON:', err);
+          console.warn('[Chat] Could not load ML metrics:', err);
         }
 
         buildTfIdf();
@@ -170,13 +146,15 @@ export async function loadUSDAData() {
 function buildTfIdf() {
   tfidf = new TfIdf();
   foods.forEach((food) => {
-    const text = `${food.description || ''} ${food.food_category || ''}`.toLowerCase();
+    // Include food name, category, and ML fitness score in searchable text
+    const fitnessLabel = food.fit === 1 ? 'healthy fit nutritious' : '';
+    const text = `${food.food_name || ''} ${food.category || ''} ${fitnessLabel}`.toLowerCase();
     tfidf.addDocument(text);
   });
-  console.log('[Chat] Built TF-IDF index');
+  console.log('[Chat] Built TF-IDF index with ML fitness scores');
 }
 
-function searchFoods(query: string, limit: number = 3): any[] {
+function searchFoods(query: string, limit: number = 5): any[] {
   if (!tfidf || foods.length === 0) return [];
 
   const scores: Array<{ index: number; score: number }> = [];
@@ -186,8 +164,28 @@ function searchFoods(query: string, limit: number = 3): any[] {
     }
   });
 
-  scores.sort((a, b) => b.score - a.score);
-  return scores.slice(0, limit).map((s) => foods[s.index]);
+  // PRIORITIZE ML-FIT FOODS: Filter for fit=1 first, fallback to all if insufficient
+  const fitScores = scores.filter(s => foods[s.index].fit === 1);
+  const selectedScores = fitScores.length >= limit ? fitScores : scores;
+  
+  // Sort by TF-IDF score, then by ML fitness score
+  selectedScores.sort((a, b) => {
+    const scoreDiff = b.score - a.score;
+    if (Math.abs(scoreDiff) < 0.01) {
+      // If TF-IDF scores are similar, prefer ML-fit foods
+      return (foods[b.index].fit || 0) - (foods[a.index].fit || 0);
+    }
+    return scoreDiff;
+  });
+  
+  const results = selectedScores.slice(0, limit).map((s) => ({
+    ...foods[s.index],
+    tfidf_score: s.score.toFixed(3),
+  }));
+  
+  console.log(`[Chat] RAG Search: Found ${fitScores.length} ML-fit foods, returning ${results.filter(r => r.fit === 1).length} fit out of ${results.length} total`);
+  
+  return results;
 }
 
 // Helper function to create cache key
@@ -213,10 +211,27 @@ export const chat = async (req: Request, res: Response) => {
     console.log('[Chat] 📝 Query received:', message.substring(0, 50) + '...');
     console.time('rag-search');
 
-    // OPTIMIZATION 4: RAG with Top-3 Only (context reduction)
-    const ragRows = searchFoods(message, 3);
-    const context = JSON.stringify(ragRows);
+    // OPTIMIZATION 4: RAG with Top-5 foods (ML-enhanced results)
+    // If no good matches, search for general healthy foods
+    let ragRows = searchFoods(message, 5);
+    
+    // Fallback: If no ML-fit foods found, search for "fruit vegetable protein" 
+    if (ragRows.filter(r => r.fit === 1).length === 0) {
+      console.log('[Chat] No fit foods found, using general healthy food search');
+      ragRows = searchFoods('fruit vegetable protein healthy', 5);
+    }
+    
     console.timeEnd('rag-search');
+    
+    // Build ML-enhanced context (internal use - foods already ranked by ML fitness)
+    const mlContext = ragRows.map((food, idx) => {
+      return `${idx + 1}. ${food.food_name} (${food.category})\n` +
+             `   Calories: ${food.calories}kcal | Protein: ${food.protein}g | Vitamin C: ${food.vitamin_c}mg\n` +
+             `   ${food.is_vegan ? 'Vegan-friendly' : ''} ${food.is_glutenfree ? 'Gluten-free' : ''} ${food.is_nutfree ? 'Nut-free' : ''}`;
+    }).join('\n\n');
+    
+    const context = mlContext;
+    console.log('[Chat] ML Context for Ollama (foods pre-ranked by ML):\n', mlContext.substring(0, 300) + '...');
 
     // OPTIMIZATION 3: Enhanced cache checking (quick cache first, then regular)
     const cacheKey = createCacheKey(message, context);
@@ -250,9 +265,15 @@ export const chat = async (req: Request, res: Response) => {
       });
     }
 
-    // OPTIMIZATION 7: Simplified system prompt for faster responses
-    const system = 'You are a helpful nutrition assistant. Give brief, practical advice.';
-    const userPrompt = message; // Simplified prompt without heavy context
+    // System prompt - conversational and user-friendly
+    const system = `You are a friendly nutrition assistant. You have access to a carefully curated database of nutritious foods. When recommending foods, explain their health benefits in simple terms - focus on what nutrients they provide, how they can help with specific goals (like weight loss, muscle building, heart health), and why they're good choices. Be conversational and encouraging. Avoid technical jargon.`;
+    
+    // User prompt - request natural, conversational response
+    const userPrompt = context.length > 0 
+      ? `User Question: ${message}\n\n[Top Recommended Foods for This Goal]\n${context}\n\nBased on the foods above (already ranked by nutritional quality), provide a friendly, conversational response that:\n- Recommends 3-5 foods from the list above\n- Explains their health benefits in simple terms (what nutrients they have and why that matters)\n- Suggests how to incorporate them into meals\n- Uses an encouraging, supportive tone\n\nDo NOT mention: ML scores, fitness scores, models, technical metrics. Just talk naturally about the foods and their benefits.`
+      : message;
+    
+    console.log('[Chat] User prompt preview:', userPrompt.substring(0, 400) + '...');
 
     // OPTIMIZATION 6: Streaming responses (SSE)
     if (stream) {
@@ -262,7 +283,7 @@ export const chat = async (req: Request, res: Response) => {
         'Connection': 'keep-alive',
       });
 
-      console.log('[Chat] 🤖 Sending query to Ollama (streaming)...');
+      console.log('[Chat]  Sending query to Ollama (streaming)...');
       console.time('ollama-streaming');
 
       let fullResponse = '';
@@ -275,18 +296,18 @@ export const chat = async (req: Request, res: Response) => {
         await limit(async () => {
           try {
             const response = await ollama.chat({
-            model: getCurrentModel(),
+            model: CHAT_MODEL,
             messages: [
               { role: 'system', content: system },
               { role: 'user', content: userPrompt },
             ],
             stream: true,
             options: {
-              num_predict: 100,    // Reduced for faster responses
-              temperature: 0.7,    // Higher for more natural responses
-              num_ctx: 512,        // Smaller context window
-              top_p: 0.9,          // More variety
-              top_k: 20,           // More token choices
+              num_predict: 500,    // Increased for complete responses
+              temperature: 0.7,
+              num_ctx: 1024,
+              top_p: 0.9,
+              top_k: 20,
             },
           });
 
@@ -309,18 +330,18 @@ export const chat = async (req: Request, res: Response) => {
             chunkCount = 0;
             
             const retryResponse = await ollama.chat({
-              model: getCurrentModel(),
+              model: CHAT_MODEL,
               messages: [
                 { role: 'system', content: system },
                 { role: 'user', content: userPrompt },
               ],
               stream: true,
               options: {
-                num_predict: 400,    // Higher for retry
-                temperature: 0.4,
+                num_predict: 600,    // Higher for complete retry
+                temperature: 0.5,
                 num_ctx: 1024,
-                top_p: 0.8,
-                top_k: 15,
+                top_p: 0.85,
+                top_k: 20,
                 repeat_penalty: 1.1,
               },
             });
@@ -356,6 +377,8 @@ export const chat = async (req: Request, res: Response) => {
         if (message.length < 50 && fullResponse.length < 200) {
           quickResponseCache.set(quickCacheKey, fullResponse);
         }
+        
+        console.log(`[Chat] Response includes ${ragRows.length} ML-analyzed foods`);
       } catch (streamError: any) {
         console.error('[Chat] Streaming error:', streamError);
         res.write(`data: ${JSON.stringify({ error: streamError.message })}\n\n`);
@@ -372,17 +395,17 @@ export const chat = async (req: Request, res: Response) => {
       // OPTIMIZATION 2: Concurrency limiting with p-limit
       const response = await limit(() =>
         ollama.chat({
-          model: getCurrentModel(),
+          model: CHAT_MODEL,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: userPrompt },
           ],
           options: {
-            num_predict: 100,    // Reduced for faster responses
-            temperature: 0.7,    // Higher for more natural responses
-            num_ctx: 512,        // Smaller context window
-            top_p: 0.9,          // More variety
-            top_k: 20,           // More token choices
+            num_predict: 500,    // Increased for complete responses
+            temperature: 0.7,
+            num_ctx: 1024,
+            top_p: 0.9,
+            top_k: 20,
           },
         })
       ) as any;
@@ -411,6 +434,7 @@ export const chat = async (req: Request, res: Response) => {
         response: content,
         cached: false,
         ms: Date.now() - t0,
+        mlFoods: ragRows.length, // Number of ML-analyzed foods used
       });
     }
   } catch (error: any) {

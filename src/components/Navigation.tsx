@@ -71,7 +71,7 @@ const Navigation = ({ onOpenAuth }: NavigationProps) => {
             className="flex items-center gap-2 font-montserrat font-bold text-2xl text-foreground hover:text-primary transition-colors"
           >
             <Leaf className="h-8 w-8 text-primary" />
-            <span>NutriEmpower</span>
+            <span>NutriSolve</span>
           </a>
 
           {/* Desktop Navigation */}

@@ -1,0 +1,59 @@
+{
+  "model": "RandomForestClassifier",
+  "best_params": {
+    "max_depth": 5,
+    "min_samples_leaf": 3,
+    "min_samples_split": 5,
+    "n_estimators": 50,
+    "random_state": 42
+  },
+  "metrics": {
+    "train": {
+      "accuracy": 0.9390243902439024,
+      "f1_macro": 0.9322089947089947,
+      "precision_macro": 0.936113427856547,
+      "recall_macro": 0.9286768322675849,
+      "roc_auc": 0.9931136251844564
+    },
+    "test": {
+      "accuracy": 0.9512195121951219,
+      "f1_macro": 0.9457671957671958,
+      "precision_macro": 0.9457671957671958,
+      "recall_macro": 0.9457671957671958,
+      "roc_auc": 0.9814814814814815
+    },
+    "confusion_matrix": [
+      [
+        26,
+        1
+      ],
+      [
+        1,
+        13
+      ]
+    ],
+    "feature_importances": {
+      "calories": 0.05101829577462446,
+      "fat": 0.08298985978337914,
+      "vitamin_c": 0.38561299257150183,
+      "nutrient_density": 0.1606578243491167,
+      "protein_ratio": 0.067045581156871,
+      "energy_density": 0.049388970644110415,
+      "micronutrient_score": 0.18850553271003684,
+      "category_Beverages": 0.0062523881415596375,
+      "category_Potato chips": 0.008528554868799994
+    }
+  },
+  "feature_names": [
+    "calories",
+    "fat",
+    "vitamin_c",
+    "nutrient_density",
+    "protein_ratio",
+    "energy_density",
+    "micronutrient_score",
+    "category_Beverages",
+    "category_Potato chips"
+  ],
+  "training_date": "2025-12-08T18:43:16.061273"
+}

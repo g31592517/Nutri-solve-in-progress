@@ -1,22 +1,24 @@
 """
-Data Preprocessing Pipeline for Meal Recommendation System
+Data Preprocessing Pipeline for Food Recommendation System
 Author: NutriSolve ML Team
-Date: October 2025
+Date: December 2025
 
-Research Design: Supervised binary classification for "fit score" prediction
-Target: Binary label (1=fits user goals, 0=doesn't fit)
-Features: 25 total (18 numerical, 5 categorical, 2 derived)
+Research Design: Supervised binary classification for "fit" vs "unfit" foods
+Target: Binary label (1=fit, 0=unfit) based on percentile-based nutritional thresholds
+Features: Real nutritional data (205 foods) with engineered features
 
 This script:
-1. Loads USDA nutritional data
-2. Generates synthetic augmentation for training
-3. Handles missing values via median imputation
-4. Encodes categorical features (OneHot)
-5. Scales numerical features (StandardScaler)
-6. Applies feature selection (SelectKBest chi2)
-7. Balances classes via SMOTE oversampling
-8. Splits data 80/20 stratified
-9. Saves preprocessor and processed data
+1. Loads real food nutrition dataset (205 samples)
+2. Creates binary dietary flags (gluten-free, nut-free, vegan) for filtering
+3. Engineers features for model training (nutrient density, ratios)
+4. Creates labels using percentile-based thresholds on raw features
+5. Handles missing values via median imputation
+6. Encodes categorical features (OneHot)
+7. Scales numerical features (StandardScaler)
+8. Applies feature selection (SelectKBest chi2: k=8-10)
+9. Conditionally applies SMOTE if minority class < 25%
+10. Splits data 80/20 stratified
+11. Saves preprocessor and processed data
 """
 
 import pandas as pd
@@ -32,311 +34,382 @@ from sklearn.compose import ColumnTransformer
 from sklearn.feature_selection import SelectKBest, chi2
 from imblearn.over_sampling import SMOTE
 
-# Set random seed for reproducibility (as per research methodology)
+# Set random seed for reproducibility
 RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
 
 # Define paths
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / 'data'
-ML_DIR = BASE_DIR / 'ml'
+BASE_DIR = Path(__file__).parent
+ML_DIR = Path(__file__).parent
 
-# Ensure directories exist
+# Ensure directory exists
 ML_DIR.mkdir(exist_ok=True)
-DATA_DIR.mkdir(exist_ok=True)
 
-def create_sample_usda_data():
+# Dataset path
+DATASET_PATH = '/home/gohon/Desktop/Nutri-solve (another copy)/nutriflame-ai/backend/ml/Food_Nutrition_Dataset.csv'
+
+def load_and_explore_data():
     """
-    Create sample USDA nutritional database
-    In production, this would be replaced with actual USDA FoodData Central data
-    Format: 288 foundation foods with nutritional breakdown
+    Load real food nutrition dataset and display basic information
+    
+    Dataset: 205 real foods with columns:
+    - food_name, category, calories, protein, carbs, fat, iron, vitamin_c
+    
+    Returns:
+        DataFrame: Loaded dataset
     """
-    print("[Preprocess] Creating sample USDA dataset...")
+    print("[Preprocess] Loading food nutrition dataset...")
     
-    # Food categories (10 unique for categorical encoding)
-    categories = ['vegetables', 'fruits', 'grains', 'proteins', 'dairy', 
-                  'nuts_seeds', 'legumes', 'beverages', 'oils', 'snacks']
+    df = pd.read_csv(DATASET_PATH)
     
-    # Generate 288 base foods (realistic nutritional profiles)
-    foods = []
-    for i in range(288):
-        cat = np.random.choice(categories)
-        
-        # Category-specific nutritional profiles
-        if cat == 'vegetables':
-            cal, prot, fat, carb, fib, sug = 25, 2, 0.3, 5, 2.5, 2
-        elif cat == 'fruits':
-            cal, prot, fat, carb, fib, sug = 60, 0.8, 0.2, 15, 2, 10
-        elif cat == 'grains':
-            cal, prot, fat, carb, fib, sug = 120, 4, 1, 25, 3, 1
-        elif cat == 'proteins':
-            cal, prot, fat, carb, fib, sug = 180, 25, 8, 0, 0, 0
-        elif cat == 'dairy':
-            cal, prot, fat, carb, fib, sug = 100, 8, 5, 12, 0, 10
-        elif cat == 'nuts_seeds':
-            cal, prot, fat, carb, fib, sug = 180, 6, 16, 6, 3, 1
-        elif cat == 'legumes':
-            cal, prot, fat, carb, fib, sug = 110, 8, 0.5, 20, 8, 2
-        elif cat == 'beverages':
-            cal, prot, fat, carb, fib, sug = 40, 0.5, 0, 10, 0, 9
-        elif cat == 'oils':
-            cal, prot, fat, carb, fib, sug = 120, 0, 14, 0, 0, 0
-        else:  # snacks
-            cal, prot, fat, carb, fib, sug = 150, 3, 8, 18, 1, 8
-        
-        # Add variance (±20% for realism)
-        food = {
-            'fdc_id': 100000 + i,
-            'description': f'{cat.title()} Item {i % 30}',
-            'food_category': cat,
-            'calories': max(10, cal * np.random.uniform(0.8, 1.2)),
-            'protein_g': max(0, prot * np.random.uniform(0.8, 1.2)),
-            'fat_g': max(0, fat * np.random.uniform(0.8, 1.2)),
-            'carbs_g': max(0, carb * np.random.uniform(0.8, 1.2)),
-            'fiber_g': max(0, fib * np.random.uniform(0.8, 1.2)),
-            'sugars_g': max(0, sug * np.random.uniform(0.8, 1.2)),
-            'sodium_mg': np.random.uniform(0, 800),
-            'vitamin_a_iu': np.random.uniform(0, 5000),
-            'vitamin_c_mg': np.random.uniform(0, 50),
-            'calcium_mg': np.random.uniform(0, 300),
-            'iron_mg': np.random.uniform(0, 5),
-            'potassium_mg': np.random.uniform(100, 800),
-            'magnesium_mg': np.random.uniform(10, 100),
-            'zinc_mg': np.random.uniform(0, 5),
-            'phosphorus_mg': np.random.uniform(50, 300),
-            'cost_per_serving': np.random.uniform(0.5, 5.0),
-            # Binary flags for allergens/dietary
-            'is_glutenfree': 1 if cat in ['vegetables', 'fruits', 'proteins', 'dairy'] else 0,
-            'is_nutfree': 0 if cat == 'nuts_seeds' else 1,
-            'is_vegan': 1 if cat in ['vegetables', 'fruits', 'grains', 'nuts_seeds', 'legumes'] else 0,
-        }
-        foods.append(food)
+    print(f"\n[Data Exploration]")
+    print(f"  - Shape: {df.shape[0]} rows × {df.shape[1]} columns")
+    print(f"  - Columns: {list(df.columns)}")
+    print(f"\n  - Missing values:")
+    missing = df.isnull().sum()
+    if missing.sum() == 0:
+        print(f"    No missing values!")
+    else:
+        for col, count in missing[missing > 0].items():
+            print(f"    {col}: {count} ({count/len(df)*100:.1f}%)")
     
-    df = pd.DataFrame(foods)
-    
-    # Save base USDA data
-    csv_path = DATA_DIR / 'usda-foods.csv'
-    df.to_csv(csv_path, index=False)
-    print(f"[Preprocess] Saved {len(df)} foods to {csv_path}")
+    print(f"\n  - Categories: {df['category'].nunique()} unique")
+    print(f"  - Sample categories: {df['category'].value_counts().head(5).to_dict()}")
     
     return df
 
-def generate_synthetic_augmentation(base_df, n_synthetic=500):
-    """
-    Generate synthetic training data by perturbing nutritional values
-    
-    Why: Augments limited real data (288 rows) to 788 total for robust training
-    Ensures 60% positive class (imbalanced, realistic for nutrition datasets)
-    
-    Label Generation Logic:
-    fit=1 if: protein > 10g AND sugars < 5g AND fiber > 3g AND cost < 2
-    This simulates "healthy, budget-friendly, allergen-safe" matches
-    """
-    print(f"[Preprocess] Generating {n_synthetic} synthetic samples...")
-    
-    synthetic_rows = []
-    target_fit_ratio = 0.64  # 64% positive class (imbalanced)
-    n_fit = int(n_synthetic * target_fit_ratio)
-    n_unfit = n_synthetic - n_fit
-    
-    # Generate positive samples (fit=1)
-    for i in range(n_fit):
-        base = base_df.sample(1).iloc[0].copy()
-        row = {
-            'fdc_id': 200000 + i,
-            'description': f'Synthetic Healthy {i}',
-            'food_category': base['food_category'],
-            'calories': np.random.uniform(100, 300),
-            'protein_g': np.random.uniform(12, 30),  # High protein
-            'fat_g': np.random.uniform(2, 15),
-            'carbs_g': np.random.uniform(10, 40),
-            'fiber_g': np.random.uniform(4, 12),  # High fiber
-            'sugars_g': np.random.uniform(0, 4),  # Low sugar
-            'sodium_mg': np.random.uniform(50, 600),
-            'vitamin_a_iu': np.random.uniform(500, 5000),
-            'vitamin_c_mg': np.random.uniform(5, 50),
-            'calcium_mg': np.random.uniform(50, 300),
-            'iron_mg': np.random.uniform(1, 5),
-            'potassium_mg': np.random.uniform(200, 800),
-            'magnesium_mg': np.random.uniform(30, 100),
-            'zinc_mg': np.random.uniform(1, 5),
-            'phosphorus_mg': np.random.uniform(100, 300),
-            'cost_per_serving': np.random.uniform(0.5, 1.8),  # Budget-friendly
-            'is_glutenfree': int(np.random.random() > 0.3),
-            'is_nutfree': int(np.random.random() > 0.2),
-            'is_vegan': int(np.random.random() > 0.5),
-        }
-        synthetic_rows.append(row)
-    
-    # Generate negative samples (fit=0)
-    for i in range(n_unfit):
-        base = base_df.sample(1).iloc[0].copy()
-        row = {
-            'fdc_id': 300000 + i,
-            'description': f'Synthetic Unhealthy {i}',
-            'food_category': base['food_category'],
-            'calories': np.random.uniform(200, 600),
-            'protein_g': np.random.uniform(0, 8),  # Low protein
-            'fat_g': np.random.uniform(10, 40),
-            'carbs_g': np.random.uniform(30, 80),
-            'fiber_g': np.random.uniform(0, 2),  # Low fiber
-            'sugars_g': np.random.uniform(10, 40),  # High sugar
-            'sodium_mg': np.random.uniform(400, 2000),
-            'vitamin_a_iu': np.random.uniform(0, 1000),
-            'vitamin_c_mg': np.random.uniform(0, 10),
-            'calcium_mg': np.random.uniform(0, 100),
-            'iron_mg': np.random.uniform(0, 2),
-            'potassium_mg': np.random.uniform(50, 300),
-            'magnesium_mg': np.random.uniform(5, 50),
-            'zinc_mg': np.random.uniform(0, 2),
-            'phosphorus_mg': np.random.uniform(30, 150),
-            'cost_per_serving': np.random.uniform(2.5, 5.0),  # Expensive
-            'is_glutenfree': int(np.random.random() > 0.7),
-            'is_nutfree': int(np.random.random() > 0.6),
-            'is_vegan': int(np.random.random() > 0.7),
-        }
-        synthetic_rows.append(row)
-    
-    synthetic_df = pd.DataFrame(synthetic_rows)
-    print(f"[Preprocess] Generated {n_fit} fit + {n_unfit} unfit samples")
-    
-    return synthetic_df
 
-def compute_labels(df):
+def create_dietary_flags(df):
     """
-    Compute binary "fit" label based on nutritional criteria
+    Create binary dietary flags based on food category for filtering in prediction phase
     
-    Label Logic (supervised learning target):
-    fit = 1 if ALL conditions met:
-      - protein_g > 10 (adequate protein for satiety/muscle)
-      - sugars_g < 5 (low sugar for weight loss/diabetes)
-      - fiber_g > 3 (digestive health, fullness)
-      - cost_per_serving < 2 (budget-friendly)
+    These flags are NOT used for labeling, only for user preference filtering
     
-    Why: Simulates multi-objective optimization (health + budget + allergen safety)
-    Matches typical user goals from onboarding (weight loss, budget $50-100/week)
+    Flags:
+    - is_glutenfree: 1 if naturally gluten-free (fruits, vegetables, meats, dairy)
+    - is_nutfree: 1 if NOT in nuts/seeds categories
+    - is_vegan: 1 if plant-based (fruits, vegetables, grains, legumes)
+    
+    Returns:
+        DataFrame: Dataset with added flags
     """
-    df['fit'] = (
-        (df['protein_g'] > 10) &
-        (df['sugars_g'] < 5) &
-        (df['fiber_g'] > 3) &
-        (df['cost_per_serving'] < 2)
-    ).astype(int)
+    print("\n[Preprocess] Creating binary dietary flags...")
     
-    print(f"[Preprocess] Label distribution: fit=1 ({df['fit'].sum()}, {df['fit'].mean()*100:.1f}%), fit=0 ({(1-df['fit']).sum()}, {(1-df['fit']).mean()*100:.1f}%)")
+    # Define category mappings
+    gluten_free_categories = [
+        'Apples', 'Bananas', 'Berries', 'Citrus fruits', 'Tropical and other fruits',
+        'Fruits and Fruit Juices', 'Dried fruits', 'Other fruits and fruit salads',
+        'Vegetables', 'Leafy vegetables', 'Tomatoes', 'Root vegetables',
+        'Meats', 'Poultry', 'Fish and shellfish', 'Eggs', 'Dairy', 'Milk',
+        'Cheese', 'Yogurt', 'Rice', 'Quinoa', 'Legumes', 'Beans'
+    ]
+    
+    nut_categories = [
+        'Nuts and seeds', 'Nut and seed products', 'Peanut butter and other nut butters'
+    ]
+    
+    vegan_categories = [
+        'Apples', 'Bananas', 'Berries', 'Citrus fruits', 'Tropical and other fruits',
+        'Fruits and Fruit Juices', 'Dried fruits', 'Other fruits and fruit salads',
+        'Vegetables', 'Leafy vegetables', 'Tomatoes', 'Root vegetables',
+        'Grains', 'Rice', 'Quinoa', 'Pasta', 'Bread', 'Cereal',
+        'Legumes', 'Beans', 'Lentils', 'Nuts and seeds', 'Plant-based milk'
+    ]
+    
+    # Create flags
+    df['is_glutenfree'] = df['category'].apply(
+        lambda x: 1 if any(gf in str(x) for gf in gluten_free_categories) else 0
+    )
+    
+    df['is_nutfree'] = df['category'].apply(
+        lambda x: 0 if any(nut in str(x) for nut in nut_categories) else 1
+    )
+    
+    df['is_vegan'] = df['category'].apply(
+        lambda x: 1 if any(veg in str(x) for veg in vegan_categories) else 0
+    )
+    
+    print(f"  - is_glutenfree: {df['is_glutenfree'].sum()} foods ({df['is_glutenfree'].mean()*100:.1f}%)")
+    print(f"  - is_nutfree: {df['is_nutfree'].sum()} foods ({df['is_nutfree'].mean()*100:.1f}%)")
+    print(f"  - is_vegan: {df['is_vegan'].sum()} foods ({df['is_vegan'].mean()*100:.1f}%)")
     
     return df
 
-def compute_derived_features(df):
+
+def engineer_features(df):
     """
-    Engineer derived features for better predictive power
+    Create engineered features for model training
     
-    Derived Features:
-    1. nutrient_density = (protein_g + fiber_g) / calories
-       Why: Measures nutrient quality per calorie (higher = healthier)
-    2. sugar_to_carb_ratio = sugars_g / (carbs_g + 1)
-       Why: High ratio indicates processed foods (simple carbs)
+    These features help the model learn better patterns but are NOT used for labeling.
+    Labels are created from RAW features only.
     
-    Mathematical Justification:
-    These ratios capture non-linear interactions between nutrients
-    that single features miss (e.g., high fiber + low cal = filling)
+    Engineered Features:
+    1. nutrient_density: (protein + iron + vitamin_c) / (calories + 1)
+       - Measures nutrient quality per calorie
+    
+    2. protein_ratio: protein / (calories + 1)
+       - High protein relative to calories
+    
+    3. carb_fat_ratio: carbs / (fat + 0.001)
+       - Balance of macronutrients
+    
+    4. energy_density: calories / 100
+       - Caloric concentration
+    
+    5. micronutrient_score: iron*10 + vitamin_c
+       - Combined micronutrient value
+    
+    Returns:
+        DataFrame: Dataset with engineered features
     """
-    df['nutrient_density'] = (df['protein_g'] + df['fiber_g']) / (df['calories'] + 1)
-    df['sugar_to_carb_ratio'] = df['sugars_g'] / (df['carbs_g'] + 1)
+    print("\n[Preprocess] Engineering features for model training...")
     
-    print(f"[Preprocess] Added derived features: nutrient_density, sugar_to_carb_ratio")
+    # Nutrient density (higher = better)
+    df['nutrient_density'] = (df['protein'] + df['iron'] + df['vitamin_c']) / (df['calories'] + 1)
+    
+    # Protein ratio (higher = more protein per calorie)
+    df['protein_ratio'] = df['protein'] / (df['calories'] + 1)
+    
+    # Carb to fat ratio
+    df['carb_fat_ratio'] = df['carbs'] / (df['fat'] + 0.001)
+    
+    # Energy density (lower = less calorie-dense)
+    df['energy_density'] = df['calories'] / 100
+    
+    # Micronutrient score (higher = better)
+    df['micronutrient_score'] = df['iron'] * 10 + df['vitamin_c']
+    
+    print(f"  - Created 5 engineered features:")
+    print(f"    • nutrient_density")
+    print(f"    • protein_ratio")
+    print(f"    • carb_fat_ratio")
+    print(f"    • energy_density")
+    print(f"    • micronutrient_score")
+    
+    return df
+
+
+def create_percentile_labels(df):
+    """
+    Create binary 'fit' labels using adaptive percentile-based thresholds on RAW features
+    
+    Method: Dynamically adjust percentiles until fit class reaches 30-35%
+    
+    Criteria (food is fit if it meets at least 3 out of 5):
+    1. protein ≥ percentile (adjustable)
+    2. fat ≤ percentile (adjustable)
+    3. calories ≤ percentile (adjustable)
+    4. iron ≥ percentile (adjustable)
+    5. vitamin_c ≥ percentile (adjustable)
+    
+    Target: 30-35% fit class through automatic threshold adjustment
+    
+    Returns:
+        DataFrame: Dataset with 'fit' label added
+    """
+    print("\n[Preprocess] Creating labels using adaptive percentile-based thresholds...")
+    print(f"  - Target: 30-35% fit class")
+    
+    # Initial percentiles (starting point)
+    protein_pct = 70
+    fat_pct = 40
+    calories_pct = 60
+    iron_pct = 70
+    vitamin_c_pct = 70
+    
+    print(f"\n  - Initial percentiles:")
+    print(f"    • protein ≥ {protein_pct}th percentile")
+    print(f"    • fat ≤ {fat_pct}th percentile")
+    print(f"    • calories ≤ {calories_pct}th percentile")
+    print(f"    • iron ≥ {iron_pct}th percentile")
+    print(f"    • vitamin_c ≥ {vitamin_c_pct}th percentile")
+    
+    # Dynamic adjustment loop
+    max_iterations = 20
+    iteration = 0
+    target_min = 30.0
+    target_max = 35.0
+    
+    print(f"\n  - Starting adaptive threshold adjustment...")
+    
+    while iteration < max_iterations:
+        iteration += 1
+        
+        # Calculate thresholds from current percentiles
+        protein_threshold = df['protein'].quantile(protein_pct / 100.0)
+        fat_threshold = df['fat'].quantile(fat_pct / 100.0)
+        calories_threshold = df['calories'].quantile(calories_pct / 100.0)
+        iron_threshold = df['iron'].quantile(iron_pct / 100.0)
+        vitamin_c_threshold = df['vitamin_c'].quantile(vitamin_c_pct / 100.0)
+        
+        # Create individual criteria
+        criteria = pd.DataFrame({
+            'high_protein': (df['protein'] >= protein_threshold).astype(int),
+            'low_fat': (df['fat'] <= fat_threshold).astype(int),
+            'low_calories': (df['calories'] <= calories_threshold).astype(int),
+            'high_iron': (df['iron'] >= iron_threshold).astype(int),
+            'high_vitamin_c': (df['vitamin_c'] >= vitamin_c_threshold).astype(int)
+        })
+        
+        # Label as 'fit' if at least 3 out of 5 criteria met
+        criteria_met = criteria.sum(axis=1)
+        temp_fit = (criteria_met >= 3).astype(int)
+        
+        # Calculate current fit percentage
+        fit_count = temp_fit.sum()
+        fit_pct = fit_count / len(df) * 100
+        
+        print(f"    Iteration {iteration}: fit={fit_pct:.1f}% ({fit_count} foods) | "
+              f"p={protein_pct}, f={fat_pct}, c={calories_pct}, i={iron_pct}, v={vitamin_c_pct}")
+        
+        # Check if target reached
+        if target_min <= fit_pct <= target_max:
+            print(f"\n  Target reached: {fit_pct:.1f}% fit (within {target_min}-{target_max}%)")
+            df['fit'] = temp_fit
+            break
+        
+        # Adjust percentiles
+        if fit_pct < target_min:
+            # Too few fit foods - make criteria easier
+            protein_pct = max(30, protein_pct - 5)
+            iron_pct = max(30, iron_pct - 5)
+            vitamin_c_pct = max(30, vitamin_c_pct - 5)
+            fat_pct = min(70, fat_pct + 5)
+            calories_pct = min(80, calories_pct + 5)
+        elif fit_pct > target_max:
+            # Too many fit foods - make criteria stricter
+            protein_pct = min(90, protein_pct + 5)
+            iron_pct = min(90, iron_pct + 5)
+            vitamin_c_pct = min(90, vitamin_c_pct + 5)
+            fat_pct = max(20, fat_pct - 5)
+            calories_pct = max(30, calories_pct - 5)
+        
+        # Last iteration check
+        if iteration == max_iterations:
+            print(f"\n  Max iterations reached. Using last result: {fit_pct:.1f}% fit")
+            df['fit'] = temp_fit
+    
+    # Final statistics
+    fit_count = df['fit'].sum()
+    unfit_count = len(df) - fit_count
+    fit_pct = fit_count / len(df) * 100
+    unfit_pct = unfit_count / len(df) * 100
+    
+    print(f"\n  - Final adjusted percentiles:")
+    print(f"    • protein ≥ {protein_pct}th percentile ({protein_threshold:.2f})")
+    print(f"    • fat ≤ {fat_pct}th percentile ({fat_threshold:.2f})")
+    print(f"    • calories ≤ {calories_pct}th percentile ({calories_threshold:.2f})")
+    print(f"    • iron ≥ {iron_pct}th percentile ({iron_threshold:.2f})")
+    print(f"    • vitamin_c ≥ {vitamin_c_pct}th percentile ({vitamin_c_threshold:.2f})")
+    
+    print(f"\n  - Final label distribution:")
+    print(f"    • fit=1: {fit_count} ({fit_pct:.1f}%)")
+    print(f"    • fit=0: {unfit_count} ({unfit_pct:.1f}%)")
+    
+    if target_min <= fit_pct <= target_max:
+        print(f"    Successfully achieved target range ({target_min}-{target_max}%)")
     
     return df
 
 def preprocess_data():
     """
-    Main preprocessing pipeline
+    Main preprocessing pipeline for food recommendation system
     
-    Steps:
-    1. Load/create USDA data (288 rows)
-    2. Augment with synthetics (500 rows) → 788 total
-    3. Compute labels (fit=1/0)
-    4. Handle missing values (median imputation for numerical)
-    5. Encode categoricals (OneHot for food_category)
-    6. Scale numericals (StandardScaler: mean=0, std=1)
-    7. Feature selection (SelectKBest chi2: 25→10 features)
-    8. Split 80/20 stratified (preserves class ratio)
-    9. Apply SMOTE on training set only (balance to 50/50)
-    10. Save preprocessor + data
+    Pipeline Steps:
+    1. Load real food nutrition dataset (205 samples)
+    2. Create binary dietary flags (gluten-free, nut-free, vegan)
+    3. Engineer features for model training
+    4. Create labels using percentile-based thresholds
+    5. Handle missing values (median imputation)
+    6. Define feature lists (numerical, categorical, binary)
+    7. Train-test split (80/20 stratified)
+    8. Create preprocessing pipeline (ColumnTransformer)
+    9. Feature selection (SelectKBest chi2, k=8-10)
+    10. Conditional SMOTE (only if minority < 25%)
+    11. Save all artifacts
     
-    Output:
-    - processed_data.csv (full dataset with labels)
-    - train_data.csv, test_data.csv (stratified split)
-    - preprocessor.pkl (fitted ColumnTransformer for predict.py)
-    - feature_names.json (for interpretability)
+    Outputs:
+    - processed_data.csv (full labeled dataset)
+    - train_data.csv, test_data.csv (with selected features)
+    - preprocessor.pkl (fitted ColumnTransformer)
+    - feature_selector.pkl (fitted SelectKBest)
+    - feature_info.json (feature names, scores)
     """
-    print("\n" + "="*60)
-    print("MEAL RECOMMENDATION ML PIPELINE - DATA PREPROCESSING")
-    print("="*60 + "\n")
+    print("\n" + "="*70)
+    print("FOOD RECOMMENDATION ML PIPELINE - DATA PREPROCESSING")
+    print("="*70 + "\n")
     
-    # Step 1: Load or create USDA data
-    usda_path = DATA_DIR / 'usda-foods.csv'
-    if usda_path.exists():
-        print(f"[Preprocess] Loading existing USDA data from {usda_path}")
-        base_df = pd.read_csv(usda_path)
-    else:
-        base_df = create_sample_usda_data()
+    # Step 1: Load and explore data
+    df = load_and_explore_data()
     
-    # Step 2: Augment with synthetic data
-    synthetic_df = generate_synthetic_augmentation(base_df, n_synthetic=500)
-    df = pd.concat([base_df, synthetic_df], ignore_index=True)
-    print(f"[Preprocess] Combined dataset: {len(df)} total rows")
+    # Step 2: Create binary dietary flags
+    df = create_dietary_flags(df)
     
-    # Step 3: Compute labels
-    df = compute_labels(df)
+    # Step 3: Engineer features
+    df = engineer_features(df)
     
-    # Step 4: Compute derived features
-    df = compute_derived_features(df)
+    # Step 4: Create labels using percentile-based thresholds
+    df = create_percentile_labels(df)
     
     # Step 5: Define feature columns
     numerical_features = [
-        'calories', 'protein_g', 'fat_g', 'carbs_g', 'fiber_g', 'sugars_g',
-        'sodium_mg', 'vitamin_a_iu', 'vitamin_c_mg', 'calcium_mg', 'iron_mg',
-        'potassium_mg', 'magnesium_mg', 'zinc_mg', 'phosphorus_mg',
-        'cost_per_serving', 'nutrient_density', 'sugar_to_carb_ratio'
+        'calories', 'protein', 'carbs', 'fat', 'iron', 'vitamin_c',
+        'nutrient_density', 'protein_ratio', 'carb_fat_ratio', 
+        'energy_density', 'micronutrient_score'
     ]
     
-    categorical_features = ['food_category']
+    categorical_features = ['category']
     
     binary_features = ['is_glutenfree', 'is_nutfree', 'is_vegan']
     
+    print(f"\n[Feature Definition]")
+    print(f"  - Numerical features ({len(numerical_features)}): {numerical_features}")
+    print(f"  - Categorical features ({len(categorical_features)}): {categorical_features}")
+    print(f"  - Binary features ({len(binary_features)}): {binary_features}")
+    
     # Step 6: Handle missing values
     print("\n[Preprocess] Handling missing values...")
+    missing_found = False
     for col in numerical_features:
         if df[col].isnull().sum() > 0:
             median_val = df[col].median()
-            df[col].fillna(median_val, inplace=True)
+            df[col] = df[col].fillna(median_val)
             print(f"  - Imputed {col} with median {median_val:.2f}")
+            missing_found = True
     
     for col in categorical_features:
-        df[col].fillna('unknown', inplace=True)
+        if df[col].isnull().sum() > 0:
+            df[col] = df[col].fillna('unknown')
+            print(f"  - Filled {col} with 'unknown'")
+            missing_found = True
+    
+    if not missing_found:
+        print(f"  No missing values found in feature columns")
     
     # Step 7: Prepare features and target
     X = df[numerical_features + categorical_features + binary_features]
     y = df['fit']
     
-    # Step 8: Split dataset (80/20 stratified)
-    # Why stratified: Preserves 64/36 class ratio in both train/test
-    # Prevents biased evaluation on imbalanced nutrition labels
+    print(f"\n[Feature Matrix]")
+    print(f"  - Total features: {X.shape[1]}")
+    print(f"  - Total samples: {X.shape[0]}")
+    print(f"  - Target distribution: fit=1 ({y.sum()}, {y.mean()*100:.1f}%), fit=0 ({(1-y).sum()}, {(1-y).mean()*100:.1f}%)")
+    
+    # Step 8: Train-test split (80/20 stratified)
     print(f"\n[Preprocess] Splitting data 80/20 stratified (random_state={RANDOM_STATE})...")
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
     )
     
-    print(f"  - Train: {len(X_train)} samples (fit={y_train.sum()}, {y_train.mean()*100:.1f}%)")
-    print(f"  - Test: {len(X_test)} samples (fit={y_test.sum()}, {y_test.mean()*100:.1f}%)")
+    print(f"  - Train: {len(X_train)} samples (fit=1: {y_train.sum()}, {y_train.mean()*100:.1f}%)")
+    print(f"  - Test: {len(X_test)} samples (fit=1: {y_test.sum()}, {y_test.mean()*100:.1f}%)")
     
-    # Step 9: Create preprocessing pipeline
+    # Step 9: Create preprocessing pipeline (ColumnTransformer)
     print("\n[Preprocess] Creating preprocessing pipeline...")
     
-    # ColumnTransformer: Applies different transformations to different column types
-    # - Numerical: SimpleImputer (median) → StandardScaler (mean=0, std=1)
-    # - Categorical: OneHotEncoder (drop='first' avoids multicollinearity)
+    # ColumnTransformer: Apply different transformations to different feature types
+    # - Numerical: StandardScaler (mean=0, std=1)
+    # - Categorical: OneHotEncoder (drop='first' to avoid multicollinearity)
     # - Binary: passthrough (already 0/1)
     preprocessor = ColumnTransformer(
         transformers=[
@@ -347,7 +420,8 @@ def preprocess_data():
         remainder='drop'
     )
     
-    # Fit preprocessor on training data only (avoid data leakage)
+    # Fit on training data only (prevent data leakage)
+    print(f"  - Fitting preprocessor on training data...")
     X_train_transformed = preprocessor.fit_transform(X_train)
     X_test_transformed = preprocessor.transform(X_test)
     
@@ -358,88 +432,152 @@ def preprocess_data():
     feature_names = num_names + cat_names + bin_names
     
     print(f"  - Features after transformation: {len(feature_names)}")
-    print(f"  - Feature names: {feature_names[:10]}... (showing first 10)")
+    print(f"  - Numerical: {len(num_names)}, Categorical (encoded): {len(cat_names)}, Binary: {len(bin_names)}")
     
     # Step 10: Feature selection (SelectKBest with chi2)
-    # Why: Reduces from 25+ to 10 features, removes noise, speeds training
-    # chi2 score: Measures dependency between feature and target
-    print("\n[Preprocess] Applying feature selection (SelectKBest chi2, k=10)...")
+    # For 205 samples, select k=8-10 features to prevent overfitting
+    # chi2 measures dependency between feature and target
+    print("\n[Preprocess] Applying feature selection (SelectKBest chi2)...")
     
-    # Note: chi2 requires non-negative features, so we shift if needed
-    X_train_nonneg = X_train_transformed - X_train_transformed.min() + 1e-9
-    X_test_nonneg = X_test_transformed - X_test_transformed.min() + 1e-9
+    # Determine k based on dataset size (205 samples → k=9)
+    n_features_to_select = min(9, len(feature_names))
+    print(f"  - Selecting k={n_features_to_select} features (optimal for {len(X_train)} samples)")
     
-    selector = SelectKBest(score_func=chi2, k=min(10, len(feature_names)))
+    # Convert to dense array if sparse and make non-negative for chi2
+    if hasattr(X_train_transformed, 'toarray'):
+        X_train_dense = X_train_transformed.toarray()
+        X_test_dense = X_test_transformed.toarray()
+    else:
+        X_train_dense = X_train_transformed
+        X_test_dense = X_test_transformed
+    
+    # Make non-negative (chi2 requirement)
+    X_train_nonneg = X_train_dense - X_train_dense.min(axis=0) + 1e-9
+    X_test_nonneg = X_test_dense - X_test_dense.min(axis=0) + 1e-9
+    
+    selector = SelectKBest(score_func=chi2, k=n_features_to_select)
     X_train_selected = selector.fit_transform(X_train_nonneg, y_train)
     X_test_selected = selector.transform(X_test_nonneg)
     
-    # Get selected feature names
+    # Get selected feature names and scores
     selected_idx = selector.get_support(indices=True)
     selected_features = [feature_names[i] for i in selected_idx]
     chi2_scores = selector.scores_[selected_idx]
     
-    print(f"  - Selected {X_train_selected.shape[1]} features:")
-    for feat, score in zip(selected_features, chi2_scores):
-        print(f"    • {feat}: chi2={score:.2f}")
+    print(f"\n  - Top {len(selected_features)} selected features:")
+    for i, (feat, score) in enumerate(sorted(zip(selected_features, chi2_scores), 
+                                              key=lambda x: x[1], reverse=True), 1):
+        print(f"    {i}. {feat}: chi2={score:.2f}")
     
-    # Step 11: Apply SMOTE oversampling (training set only)
-    # Why: Balances 64/36 to 50/50, prevents RF bias toward majority
-    # Improves recall on minority class (unfit foods)
-    print("\n[Preprocess] Applying SMOTE oversampling (training set only)...")
-    print(f"  - Before SMOTE: fit=1 {y_train.sum()}, fit=0 {(1-y_train).sum()}")
+    # Step 11: Conditional SMOTE oversampling (training set only)
+    # Only apply if minority class < 25%, target ~30-40% minority
+    print("\n[SMOTE Strategy]")
     
-    smote = SMOTE(random_state=RANDOM_STATE, k_neighbors=5)
-    X_train_resampled, y_train_resampled = smote.fit_resample(X_train_selected, y_train)
+    minority_class = min(y_train.sum(), len(y_train) - y_train.sum())
+    minority_pct = minority_class / len(y_train) * 100
     
-    print(f"  - After SMOTE: fit=1 {y_train_resampled.sum()}, fit=0 {(1-y_train_resampled).sum()}")
-    print(f"  - Train size increased: {len(y_train)} → {len(y_train_resampled)}")
+    print(f"  - Training set: fit=1 ({y_train.sum()}), fit=0 ({len(y_train) - y_train.sum()})")
+    print(f"  - Minority class: {minority_pct:.1f}%")
     
-    # Step 12: Save everything
-    print("\n[Preprocess] Saving preprocessed data and artifacts...")
+    if minority_pct < 25:
+        print(f"  - Minority < 25%, applying SMOTE to balance to ~30-40%")
+        
+        # Calculate sampling strategy to reach 30% minority
+        majority_class = max(y_train.sum(), len(y_train) - y_train.sum())
+        target_minority = int(majority_class * 0.42)  # Target 30% minority (42% of majority)
+        
+        # Determine k_neighbors (conservative for small dataset)
+        k_neighbors = min(5, minority_class - 1) if minority_class > 1 else 1
+        
+        print(f"  - Target minority samples: {target_minority}")
+        print(f"  - Using k_neighbors={k_neighbors} (conservative for {len(X_train)} samples)")
+        
+        smote = SMOTE(
+            sampling_strategy=target_minority / majority_class,
+            random_state=RANDOM_STATE,
+            k_neighbors=k_neighbors
+        )
+        X_train_resampled, y_train_resampled = smote.fit_resample(X_train_selected, y_train)
+        
+        new_minority_pct = min(y_train_resampled.sum(), len(y_train_resampled) - y_train_resampled.sum()) / len(y_train_resampled) * 100
+        print(f"  - After SMOTE: fit=1 ({y_train_resampled.sum()}), fit=0 ({len(y_train_resampled) - y_train_resampled.sum()})")
+        print(f"  - New minority: {new_minority_pct:.1f}%")
+        print(f"  - Training samples: {len(y_train)} → {len(y_train_resampled)}")
+    else:
+        print(f"  - Minority ≥ 25%, skipping SMOTE (natural distribution is acceptable)")
+        X_train_resampled = X_train_selected
+        y_train_resampled = y_train
     
-    # Save full dataset with labels
+    # Step 12: Save all artifacts
+    print("\n[Saving Artifacts]")
+    print("="*70)
+    
+    # Save full processed dataset with labels
     df.to_csv(ML_DIR / 'processed_data.csv', index=False)
-    print(f"  - Saved processed_data.csv ({len(df)} rows)")
+    print(f"  Saved processed_data.csv ({len(df)} rows)")
     
     # Save train/test splits (with selected features)
     train_df = pd.DataFrame(X_train_resampled, columns=selected_features)
-    train_df['fit'] = y_train_resampled.values
+    # Handle both numpy array (from SMOTE) and pandas Series (no SMOTE)
+    if isinstance(y_train_resampled, np.ndarray):
+        train_df['fit'] = y_train_resampled
+    else:
+        train_df['fit'] = y_train_resampled.values
     train_df.to_csv(ML_DIR / 'train_data.csv', index=False)
-    print(f"  - Saved train_data.csv ({len(train_df)} rows)")
+    print(f"  Saved train_data.csv ({len(train_df)} rows)")
     
     test_df = pd.DataFrame(X_test_selected, columns=selected_features)
     test_df['fit'] = y_test.values
     test_df.to_csv(ML_DIR / 'test_data.csv', index=False)
-    print(f"  - Saved test_data.csv ({len(test_df)} rows)")
+    print(f"  Saved test_data.csv ({len(test_df)} rows)")
     
-    # Save preprocessor pipeline
+    # Save preprocessing pipeline
     joblib.dump(preprocessor, ML_DIR / 'preprocessor.pkl')
-    print(f"  - Saved preprocessor.pkl")
+    print(f"  Saved preprocessor.pkl")
     
     # Save feature selector
     joblib.dump(selector, ML_DIR / 'feature_selector.pkl')
-    print(f"  - Saved feature_selector.pkl")
+    print(f"  Saved feature_selector.pkl")
     
-    # Save feature names
+    # Save feature information
     feature_info = {
         'all_features': feature_names,
         'selected_features': selected_features,
-        'chi2_scores': chi2_scores.tolist()
+        'chi2_scores': chi2_scores.tolist(),
+        'feature_counts': {
+            'numerical': len(num_names),
+            'categorical_encoded': len(cat_names),
+            'binary': len(bin_names),
+            'total_before_selection': len(feature_names),
+            'total_after_selection': len(selected_features)
+        }
     }
-    with open(ML_DIR / 'feature_names.json', 'w') as f:
+    with open(ML_DIR / 'feature_info.json', 'w') as f:
         json.dump(feature_info, f, indent=2)
-    print(f"  - Saved feature_names.json")
+    print(f"  Saved feature_info.json")
     
-    print("\n" + "="*60)
+    # Summary
+    print("\n" + "="*70)
     print("PREPROCESSING COMPLETE!")
-    print("="*60)
-    print(f"Total samples: {len(df)}")
-    print(f"Train samples: {len(train_df)} (after SMOTE)")
-    print(f"Test samples: {len(test_df)}")
-    print(f"Features: {len(selected_features)} (selected from {len(feature_names)})")
-    print(f"Class distribution: {df['fit'].value_counts().to_dict()}")
-    print("\nNext step: Run train.py for model training")
-    print("="*60 + "\n")
+    print("="*70)
+    print(f"\nDataset Summary:")
+    print(f"  • Total samples: {len(df)}")
+    print(f"  • Training samples: {len(train_df)} (after preprocessing)")
+    print(f"  • Test samples: {len(test_df)}")
+    print(f"  • Selected features: {len(selected_features)} (from {len(feature_names)} total)")
+    print(f"\nLabel Distribution:")
+    print(f"  • Overall: fit=1 ({df['fit'].sum()}), fit=0 ({len(df)-df['fit'].sum()})")
+    print(f"  • Training: fit=1 ({train_df['fit'].sum()}), fit=0 ({len(train_df)-train_df['fit'].sum()})")
+    print(f"  • Test: fit=1 ({test_df['fit'].sum()}), fit=0 ({len(test_df)-test_df['fit'].sum()})")
+    print(f"\nSaved Artifacts:")
+    print(f"  • processed_data.csv - Full labeled dataset")
+    print(f"  • train_data.csv - Training set with selected features")
+    print(f"  • test_data.csv - Test set with selected features")
+    print(f"  • preprocessor.pkl - Fitted ColumnTransformer")
+    print(f"  • feature_selector.pkl - Fitted SelectKBest")
+    print(f"  • feature_info.json - Feature metadata")
+    print(f"\nNext Step: Run train.py for model training")
+    print("="*70 + "\n")
 
 if __name__ == '__main__':
     preprocess_data()

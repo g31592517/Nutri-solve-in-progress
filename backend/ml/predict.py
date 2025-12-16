@@ -1,11 +1,10 @@
 """
-Real-time Prediction Service for Meal Recommendations
+Real-time Prediction Service for Food Recommendations
 Author: NutriSolve ML Team
-Date: October 2025
+Date: December 2025
 
-This script provides prediction endpoint for integration with TypeScript backend
-Input: JSON with user profile and query parameters
-Output: JSON with ranked meal recommendations and probabilities
+Updated to work with new preprocessing pipeline (205 real foods, adaptive thresholds)
+All preprocessing is done offline - this script only loads and predicts.
 
 Integration:
 Called via child_process.spawn() from /backend/controllers/recController.ts
@@ -21,66 +20,111 @@ from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
-# Define paths
-BASE_DIR = Path(__file__).parent.parent
-ML_DIR = BASE_DIR / 'ml'
-DATA_DIR = BASE_DIR / 'data'
+# Define paths (must match training pipeline)
+BASE_DIR = Path(__file__).parent
+ML_DIR = Path(__file__).parent
 
-def load_models():
+
+def load_model_and_features():
     """
-    Load trained model, preprocessor, and feature selector
-    Returns: model, preprocessor, feature_selector, feature_names
+    Load trained model and selected feature names
+    
+    Returns: model, selected_features list
+    
+    Note: NO preprocessor or feature_selector needed
+    processed_data.csv is already fully preprocessed
     """
     try:
+        # Load trained Random Forest model
         model = joblib.load(ML_DIR / 'rf_model.pkl')
-        preprocessor = joblib.load(ML_DIR / 'preprocessor.pkl')
-        feature_selector = joblib.load(ML_DIR / 'feature_selector.pkl')
         
-        with open(ML_DIR / 'feature_names.json', 'r') as f:
+        # Load selected features from feature_info.json
+        with open(ML_DIR / 'feature_info.json', 'r') as f:
             feature_info = json.load(f)
         
-        return model, preprocessor, feature_selector, feature_info
+        selected_features = feature_info['selected_features']
+        
+        # Note: selected_features may include category_* features
+        # We'll need to encode the 'category' column later
+        
+        return model, selected_features
+        
     except FileNotFoundError as e:
-        print(json.dumps({'error': f'Model files not found. Run train.py first. {str(e)}'}), file=sys.stderr)
+        print(json.dumps({'error': f'Model files not found. Run train.py first. {str(e)}'}), 
+              file=sys.stderr)
         sys.exit(1)
+
 
 def load_food_database():
     """
-    Load complete food database for ranking
-    Returns: DataFrame with all food items and their features
+    Load preprocessed food database
+    
+    Returns: DataFrame with 205 foods, all features already computed
+    
+    Note: processed_data.csv contains:
+    - Raw features: calories, protein, carbs, fat, iron, vitamin_c
+    - Engineered features: nutrient_density, protein_ratio, carb_fat_ratio, 
+                           energy_density, micronutrient_score
+    - Binary flags: is_glutenfree, is_nutfree, is_vegan
+    - Labels: fit (not used for prediction)
     """
     try:
-        # Load processed data (includes all foods with computed features)
-    
-    # Prepare features for prediction
-    numerical_features = [
-        'calories', 'protein_g', 'fat_g', 'carbs_g', 'fiber_g', 'sugars_g',
-        'sodium_mg', 'vitamin_a_iu', 'vitamin_c_mg', 'calcium_mg', 'iron_mg',
-        'potassium_mg', 'magnesium_mg', 'zinc_mg', 'phosphorus_mg',
-        'cost_per_serving', 'nutrient_density', 'sugar_to_carb_ratio'
-    ]
-    categorical_features = ['food_category']
-    binary_features = ['is_glutenfree', 'is_nutfree', 'is_vegan']
-    
         df = pd.read_csv(ML_DIR / 'processed_data.csv')
         return df
-    except FileNotFoundError:
-        # Fallback to raw USDA data
-        try:
-            df = pd.read_csv(DATA_DIR / 'usda-foods.csv')
-            return df
-        except FileNotFoundError as e:
-            print(json.dumps({'error': f'Food database not found: {str(e)}'}), file=sys.stderr)
-            sys.exit(1)
+    except FileNotFoundError as e:
+        print(json.dumps({'error': f'Food database not found: {str(e)}'}), 
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def estimate_cost(df):
+    """
+    Estimate cost per serving based on category and calories
+    
+    Heuristic approach (since cost not in dataset):
+    - Base costs by category
+    - Scale by calorie density
+    
+    Returns: DataFrame with 'estimated_cost' column added
+    """
+    # Base costs per serving by category (approximate USD)
+    base_costs = {
+        'Fruits and Fruit Juices': 0.30,
+        'Vegetables and Vegetable Products': 0.25,
+        'Dairy and Egg Products': 0.50,
+        'Legumes and Legume Products': 0.35,
+        'Apples': 0.30,
+        'Bananas': 0.20,
+        'Berries': 0.60,
+        'Beverages': 0.40,
+        'Snacks': 0.80,
+        'Cakes and pies': 1.00,
+        'Fast Foods': 1.20
+    }
+    
+    # Default cost for unknown categories
+    default_cost = 0.50
+    
+    # Estimate cost: base_cost * (calories / 150)
+    # Scales by energy density (150 cal = baseline)
+    df['estimated_cost'] = df.apply(
+        lambda row: base_costs.get(row.get('category', 'unknown'), default_cost) 
+                    * (row['calories'] / 150.0),
+        axis=1
+    )
+    
+    # Clip to reasonable range [0.10, 3.00]
+    df['estimated_cost'] = df['estimated_cost'].clip(0.10, 3.00)
+    
+    return df
 
 def filter_by_user_constraints(df, user_profile):
     """
-    Filter foods based on user's dietary restrictions and preferences
+    Filter foods based on user's dietary restrictions and budget
     
     User constraints from onboarding:
-    - dietaryRestrictions: ['vegan', 'gluten-free', 'nut-free', etc.]
+    - dietaryRestrictions: ['Vegan', 'Gluten Free', 'Nut Allergy']
     - weeklyBudget: max cost per serving
-    - favoriteCuisines: ['Italian', 'Asian', etc.] (optional filtering)
     
     Returns: Filtered DataFrame
     """
@@ -89,165 +133,255 @@ def filter_by_user_constraints(df, user_profile):
     # Extract user constraints
     restrictions = user_profile.get('dietaryRestrictions', [])
     budget = user_profile.get('weeklyBudget', 100)  # Default $100/week
-    max_cost_per_serving = budget / 21  # Assume 3 meals/day * 7 days
+    max_cost_per_serving = budget / 21  # Assume 3 meals/day × 7 days
     
-    # Filter by dietary restrictions
+    # Apply dietary restrictions
     if 'Vegan' in restrictions or 'vegan' in restrictions:
         if 'is_vegan' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['is_vegan'] == 1]
+            print(f"Applied Vegan filter: {len(filtered_df)} foods remaining", file=sys.stderr)
     
     if 'Gluten Free' in restrictions or 'gluten-free' in restrictions:
         if 'is_glutenfree' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['is_glutenfree'] == 1]
+            print(f"Applied Gluten-free filter: {len(filtered_df)} foods remaining", file=sys.stderr)
     
     if 'Nut Allergy' in restrictions or 'nut-free' in restrictions:
         if 'is_nutfree' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['is_nutfree'] == 1]
+            print(f"Applied Nut-free filter: {len(filtered_df)} foods remaining", file=sys.stderr)
     
-    # Filter by budget
-    if 'cost_per_serving' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['cost_per_serving'] <= max_cost_per_serving]
+    # Apply budget constraint
+    if 'estimated_cost' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['estimated_cost'] <= max_cost_per_serving]
+        print(f"Applied budget filter (≤${max_cost_per_serving:.2f}): {len(filtered_df)} foods remaining", 
+              file=sys.stderr)
     
     return filtered_df
 
-def adjust_for_goals(probs, df, user_profile):
+def apply_goal_adjustments(probs, df, user_profile):
     """
-    Adjust prediction probabilities based on user's primary goal
+    Apply goal-based adjustments to model probabilities
     
-    Goal-based adjustments:
-    - Weight Loss: Boost low-calorie, high-protein foods
-    - Muscle Gain: Boost high-protein, high-calorie foods
-    - Heart Health: Boost low-sodium, high-fiber foods
-    - Budget: Already filtered by cost, boost nutrient density
+    Goal-specific boosts:
+    - Weight Loss: Low calories, high protein ratio
+    - Muscle Gain: High protein, high nutrient density
+    - Heart Health: Low calories, high micronutrient score
+    - General Health: Small smoothing only
     
     Returns: Adjusted probabilities
     """
-    goal = user_profile.get('primaryGoal', '')
+    goal = user_profile.get('primaryGoal', 'General Health')
     adjusted_probs = probs.copy()
     
     if goal == 'Weight Loss':
-        # Boost foods with calories < 300 and protein > 15g
-        low_cal_mask = (df['calories'] < 300) & (df['protein_g'] > 15)
-        adjusted_probs[low_cal_mask] *= 1.2
+        # Boost low-calorie, high-protein-ratio foods
+        weight_loss_boost = (
+            (df['calories'] < 200) * 0.15 +  # Low calorie bonus
+            (df['protein_ratio'] > 0.05) * 0.10  # High protein ratio bonus
+        )
+        adjusted_probs = adjusted_probs * (1 + weight_loss_boost)
+        print(f"Applied Weight Loss adjustments", file=sys.stderr)
     
     elif goal == 'Muscle Gain':
-        # Boost high-protein foods (>20g protein)
-        high_protein_mask = df['protein_g'] > 20
-        adjusted_probs[high_protein_mask] *= 1.3
+        # Boost high-protein, nutrient-dense foods
+        muscle_boost = (
+            (df['protein'] > 10) * 0.20 +  # High protein bonus
+            (df['nutrient_density'] > 0.1) * 0.10  # Nutrient density bonus
+        )
+        adjusted_probs = adjusted_probs * (1 + muscle_boost)
+        print(f"Applied Muscle Gain adjustments", file=sys.stderr)
     
     elif goal == 'Heart Health':
-        # Boost low-sodium, high-fiber foods
-        heart_healthy_mask = (df['sodium_mg'] < 500) & (df['fiber_g'] > 5)
-        adjusted_probs[heart_healthy_mask] *= 1.2
+        # Boost foods with high micronutrients, low energy density
+        heart_boost = (
+            (df['micronutrient_score'] > 20) * 0.15 +  # High micronutrients bonus
+            (df['energy_density'] < 2) * 0.10  # Low energy density bonus
+        )
+        adjusted_probs = adjusted_probs * (1 + heart_boost)
+        print(f"Applied Heart Health adjustments", file=sys.stderr)
     
-    # Normalize probabilities to [0, 1]
+    else:  # General Health or unknown
+        # Small smoothing only (5% boost across board)
+        adjusted_probs = adjusted_probs * 1.05
+        print(f"Applied General Health smoothing", file=sys.stderr)
+    
+    # Clip to valid probability range
     adjusted_probs = np.clip(adjusted_probs, 0, 1)
     
     return adjusted_probs
+
+
+def apply_cost_penalty(adjusted_probs, df):
+    """
+    Apply cost penalty to final scores
+    
+    Strategy:
+    - Normalize costs relative to median
+    - Apply gentle 15% penalty for expensive foods
+    - Ensure nutrition still dominates over cost
+    
+    Returns: Final scores with cost penalty applied
+    """
+    costs = df['estimated_cost'].values
+    median_cost = np.median(costs)
+    
+    # Normalize cost: (cost - median) / median
+    # Results in range roughly [-1, 1] for most foods
+    norm_cost = (costs - median_cost) / (median_cost + 0.01)
+    norm_cost = np.clip(norm_cost, 0, 1)  # Only penalize above-median costs
+    
+    # Apply gentle penalty: final_score = adjusted_prob - (norm_cost * 0.15)
+    # 15% penalty ensures cost influences ranking but doesn't override nutrition
+    final_scores = adjusted_probs - (norm_cost * 0.15)
+    final_scores = np.clip(final_scores, 0, 1)
+    
+    print(f"Applied cost penalty (median: ${median_cost:.2f})", file=sys.stderr)
+    
+    return final_scores
+
+
+def generate_reasons(food):
+    """
+    Generate human-readable reasons for recommendation
+    
+    Based on available features in processed_data.csv
+    """
+    reasons = []
+    
+    # High protein
+    if food.get('protein', 0) > 5:
+        reasons.append(f"High protein ({food['protein']:.1f}g)")
+    
+    # Nutrient density
+    if food.get('nutrient_density', 0) > 0.1:
+        reasons.append(f"Nutrient-dense (score: {food['nutrient_density']:.2f})")
+    
+    # Vitamin C
+    if food.get('vitamin_c', 0) > 20:
+        reasons.append(f"Rich in vitamin C ({food['vitamin_c']:.0f}mg)")
+    
+    # Low calorie
+    if food.get('calories', 0) < 150:
+        reasons.append(f"Low calorie ({food['calories']:.0f} kcal)")
+    
+    # Iron
+    if food.get('iron', 0) > 1.0:
+        reasons.append(f"Good source of iron ({food['iron']:.1f}mg)")
+    
+    # Budget-friendly
+    if food.get('estimated_cost', 999) < 0.50:
+        reasons.append(f"Budget-friendly (${food['estimated_cost']:.2f})")
+    
+    # Micronutrient score
+    if food.get('micronutrient_score', 0) > 30:
+        reasons.append(f"Rich in micronutrients (score: {food['micronutrient_score']:.0f})")
+    
+    return reasons
 
 def predict_top_meals(user_input, top_k=5):
     """
     Main prediction pipeline
     
     Steps:
-    1. Load trained model and food database
-    2. Filter foods by user constraints (allergies, budget)
-    3. Prepare features for prediction
-    4. Predict fit probabilities for all eligible foods
-    5. Adjust probabilities based on user goals
-    6. Rank and return top-k recommendations
+    1. Load model and selected features (no preprocessing artifacts)
+    2. Load preprocessed food database (already has all features)
+    3. Estimate costs for all foods
+    4. Filter foods by user constraints (dietary + budget)
+    5. Extract features using selected_features (no transformation needed)
+    6. Predict probabilities using trained model
+    7. Apply goal-based adjustments
+    8. Apply cost penalty
+    9. Rank by final score and return top-k
     
     Args:
-        user_input: Dict with 'userProfile' (from onboarding) and 'query' (text)
+        user_input: Dict with 'userProfile' and 'query'
         top_k: Number of recommendations to return
     
     Returns:
-        Dict with ranked meals, probabilities, and reasons
+        Dict with ranked meals, scores, and metadata
     """
-    # Load artifacts
-    model, preprocessor, feature_selector, feature_info = load_models()
-    food_db = load_food_database()
+    # Step 1: Load model and features
+    model, selected_features = load_model_and_features()
+    print(f"Loaded model with {len(selected_features)} selected features", file=sys.stderr)
     
-    # Extract user data
+    # Step 2: Load preprocessed food database
+    food_db = load_food_database()
+    print(f"Loaded {len(food_db)} foods from database", file=sys.stderr)
+    
+    # Step 3: Estimate costs
+    food_db = estimate_cost(food_db)
+    
+    # Step 4: Extract user data and filter
     user_profile = user_input.get('userProfile', {})
     query = user_input.get('query', '')
     
-    # Filter foods by user constraints
     eligible_foods = filter_by_user_constraints(food_db, user_profile)
     
     if len(eligible_foods) == 0:
         return {
             'recommendations': [],
-            'message': 'No foods match your dietary restrictions and budget. Try relaxing some constraints.'
+            'message': 'No foods match your dietary restrictions and budget. Try relaxing some constraints.',
+            'total_eligible': 0
         }
     
-    # Prepare features for prediction
-    numerical_features = [
-        'calories', 'protein_g', 'fat_g', 'carbs_g', 'fiber_g', 'sugars_g',
-        'sodium_mg', 'vitamin_a_iu', 'vitamin_c_mg', 'calcium_mg', 'iron_mg',
-        'potassium_mg', 'magnesium_mg', 'zinc_mg', 'phosphorus_mg',
-        'cost_per_serving', 'nutrient_density', 'sugar_to_carb_ratio'
-    ]
-    categorical_features = ['food_category']
-    binary_features = ['is_glutenfree', 'is_nutfree', 'is_vegan']
+    print(f"After filtering: {len(eligible_foods)} eligible foods", file=sys.stderr)
     
-    # Ensure all required columns exist (fill missing with defaults)
-    for col in numerical_features:
-        if col not in eligible_foods.columns:
-            if col == 'nutrient_density':
-                eligible_foods[col] = (eligible_foods.get('protein_g', 0) + eligible_foods.get('fiber_g', 0)) / (eligible_foods.get('calories', 1) + 1)
-            elif col == 'sugar_to_carb_ratio':
-                eligible_foods[col] = eligible_foods.get('sugars_g', 0) / (eligible_foods.get('carbs_g', 1) + 1)
-            else:
-                eligible_foods[col] = 0
+    # Step 5: Extract features (handle category encoding if needed)
+    # Separate numerical/engineered features from category features
+    numerical_features = [f for f in selected_features if not f.startswith('category_')]
+    category_features = [f for f in selected_features if f.startswith('category_')]
     
-    for col in categorical_features:
-        if col not in eligible_foods.columns:
-            eligible_foods[col] = 'unknown'
+    # Build feature matrix
+    X_numerical = eligible_foods[numerical_features].values
     
-    for col in binary_features:
-        if col not in eligible_foods.columns:
-            eligible_foods[col] = 0
+    # Handle category encoding if model requires category features
+    if category_features:
+        # One-hot encode the category column
+        from sklearn.preprocessing import LabelBinarizer
+        
+        # Get unique categories from selected features
+        categories_needed = [f.replace('category_', '') for f in category_features]
+        
+        # Create binary columns for each category
+        X_category = np.zeros((len(eligible_foods), len(category_features)))
+        for idx, row in eligible_foods.iterrows():
+            cat = row.get('category', '')
+            for i, cat_name in enumerate(categories_needed):
+                if cat_name in cat:
+                    X_category[idx, i] = 1
+        
+        # Combine numerical and categorical features
+        X = np.hstack([X_numerical, X_category])
+    else:
+        X = X_numerical
     
-    # Select feature columns
-    X = eligible_foods[numerical_features + categorical_features + binary_features]
+    print(f"Feature matrix shape: {X.shape} (numerical: {len(numerical_features)}, categorical: {len(category_features)})", file=sys.stderr)
     
-    # Apply preprocessing pipeline
-    X_transformed = preprocessor.transform(X)
+    # Step 6: Predict probabilities (model trained on preprocessed data)
+    model_probs = model.predict_proba(X)[:, 1]  # Probability of fit=1
+    print(f"Model predictions - mean: {model_probs.mean():.3f}, std: {model_probs.std():.3f}", 
+          file=sys.stderr)
     
-    # Handle non-negative requirement for chi2
-    X_nonneg = X_transformed - X_transformed.min() + 1e-9
+    # Step 7: Apply goal-based adjustments
+    goal_adjusted_probs = apply_goal_adjustments(model_probs, eligible_foods, user_profile)
     
-    # Apply feature selection
-    X_selected = feature_selector.transform(X_nonneg)
+    # Step 8: Apply cost penalty to final ranking
+    final_scores = apply_cost_penalty(goal_adjusted_probs, eligible_foods)
     
-    # Predict probabilities
-    probs = model.predict_proba(X_selected)[:, 1]  # Probability of fit=1
-    
-    # Adjust for user goals
-    probs = adjust_for_goals(probs, eligible_foods, user_profile)
-    
-    # Rank by probability (descending)
-    top_indices = np.argsort(probs)[::-1][:top_k]
+    # Step 9: Rank by final score (descending)
+    top_indices = np.argsort(final_scores)[::-1][:top_k]
     
     # Build recommendations
     recommendations = []
     for idx in top_indices:
         food = eligible_foods.iloc[idx]
-        prob = probs[idx]
+        model_prob = model_probs[idx]
+        adjusted_score = goal_adjusted_probs[idx]
+        final_score = final_scores[idx]
         
-        # Generate reason based on features
-        reasons = []
-        if food['protein_g'] > 15:
-            reasons.append(f"High protein ({food['protein_g']:.1f}g)")
-        if food['fiber_g'] > 5:
-            reasons.append(f"High fiber ({food['fiber_g']:.1f}g)")
-        if food['calories'] < 200:
-            reasons.append(f"Low calorie ({food['calories']:.0f} kcal)")
-        if food['sugars_g'] < 5:
-            reasons.append(f"Low sugar ({food['sugars_g']:.1f}g)")
-        if food['cost_per_serving'] < 2:
-            reasons.append(f"Budget-friendly (${food['cost_per_serving']:.2f})")
+        # Generate reasons
+        reasons = generate_reasons(food)
         
         # Dietary flags
         dietary = []
@@ -258,20 +392,32 @@ def predict_top_meals(user_input, top_k=5):
         if food.get('is_nutfree', 0) == 1:
             dietary.append('Nut-free')
         
+        # Confidence level
+        if final_score > 0.8:
+            confidence = 'high'
+        elif final_score > 0.6:
+            confidence = 'medium'
+        else:
+            confidence = 'moderate'
+        
         recommendation = {
-            'name': food['description'],
-            'category': food.get('food_category', 'Unknown'),
-            'fit_score': float(prob),
-            'confidence': 'high' if prob > 0.8 else 'medium' if prob > 0.6 else 'moderate',
+            'name': food.get('food_name', 'Unknown'),
+            'category': food.get('category', 'Unknown'),
+            'model_probability': float(model_prob),
+            'goal_adjusted_score': float(adjusted_score),
+            'final_score': float(final_score),
+            'confidence': confidence,
             'nutrition': {
-                'calories': float(food['calories']),
-                'protein': float(food['protein_g']),
-                'carbs': float(food['carbs_g']),
-                'fat': float(food['fat_g']),
-                'fiber': float(food['fiber_g']),
-                'sugars': float(food['sugars_g'])
+                'calories': float(food.get('calories', 0)),
+                'protein': float(food.get('protein', 0)),
+                'carbs': float(food.get('carbs', 0)),
+                'fat': float(food.get('fat', 0)),
+                'iron': float(food.get('iron', 0)),
+                'vitamin_c': float(food.get('vitamin_c', 0)),
+                'nutrient_density': float(food.get('nutrient_density', 0)),
+                'micronutrient_score': float(food.get('micronutrient_score', 0))
             },
-            'cost': float(food['cost_per_serving']),
+            'estimated_cost': float(food.get('estimated_cost', 0)),
             'reasons': reasons,
             'dietary_info': dietary
         }
@@ -280,9 +426,11 @@ def predict_top_meals(user_input, top_k=5):
     return {
         'recommendations': recommendations,
         'query': query,
+        'total_foods_in_db': len(food_db),
         'total_eligible': len(eligible_foods),
-        'model_version': '1.0',
-        'user_goal': user_profile.get('primaryGoal', 'General Health')
+        'model_version': '2.0-adaptive-thresholds',
+        'user_goal': user_profile.get('primaryGoal', 'General Health'),
+        'features_used': len(selected_features)
     }
 
 def main():
@@ -311,13 +459,18 @@ def main():
       "recommendations": [
         {
           "name": "Food name",
-          "fit_score": 0.85,
+          "model_probability": 0.85,
+          "goal_adjusted_score": 0.90,
+          "final_score": 0.87,
           "confidence": "high",
           "nutrition": {...},
+          "estimated_cost": 0.45,
           "reasons": [...],
           "dietary_info": [...]
         }
-      ]
+      ],
+      "total_eligible": 67,
+      "model_version": "2.0-adaptive-thresholds"
     }
     """
     try:
@@ -330,7 +483,7 @@ def main():
                     'age': 30,
                     'gender': 'Female',
                     'primaryGoal': 'Weight Loss',
-                    'dietaryRestrictions': ['Vegan'],
+                    'dietaryRestrictions': [],
                     'weeklyBudget': 75
                 },
                 'query': 'healthy breakfast',
@@ -358,6 +511,8 @@ def main():
     except Exception as e:
         error_response = {'error': f'Prediction failed: {str(e)}'}
         print(json.dumps(error_response), file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
 if __name__ == '__main__':

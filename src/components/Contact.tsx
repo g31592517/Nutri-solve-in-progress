@@ -9,7 +9,7 @@ const Contact = () => {
     {
       icon: Mail,
       title: "Email",
-      content: "support@nutriempower.com",
+      content: "support@nutrisolve.com",
     },
     {
       icon: Phone,

@@ -1,7 +1,7 @@
 """
-Random Forest Model Training for Meal Recommendation System
+Random Forest Model Training for Food Recommendation System
 Author: NutriSolve ML Team
-Date: October 2025
+Date: December 2025
 
 Theoretical Foundation:
 Random Forest Classifier - Bagging ensemble of N decision trees
@@ -18,17 +18,23 @@ Mathematical Formulation:
   ŷ = argmax_k Σ(i=1 to N) I(T_i(x) = k)
 
 Why Random Forest:
-1. Handles non-linear relationships (nutrition data: fiber-calorie interactions)
-2. Robust to outliers and noise (variable vitamin levels across foods)
+1. Handles non-linear relationships (nutrition data interactions)
+2. Robust to outliers and noise (variable nutrient levels)
 3. Bagging reduces variance: σ_ensemble ≈ σ_tree / √N
 4. Feature importance via Gini decrease (interpretability)
 5. No hyperparameter sensitivity (vs SVM kernel tuning)
-6. Naturally handles imbalanced data with class_weight='balanced'
+
+Small Dataset Adaptations (205 samples, 34.6% minority):
+- Conservative hyperparameters to prevent overfitting
+- max_depth ≈ log2(n_samples) = 7-8
+- min_samples_split ≈ n_samples/40 = 5
+- min_samples_leaf ≈ n_samples/100 = 2-3
+- No class_weight='balanced' (34% is naturally balanced)
 
 Hyperparameter Tuning:
-GridSearchCV with 5-fold cross-validation on training set
-Scoring: f1_macro (balances precision and recall on imbalanced classes)
-Search space: n_estimators [50,100,200], max_depth [5,10,15], min_samples_split [2,5,10]
+GridSearchCV with 5-fold cross-validation
+Scoring: f1_macro (balances precision and recall)
+Conservative search space for 205 samples
 """
 
 import pandas as pd
@@ -49,13 +55,14 @@ warnings.filterwarnings('ignore')
 RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
 
-# Define paths
-BASE_DIR = Path(__file__).parent.parent
-ML_DIR = BASE_DIR / 'ml'
+# Define paths (must match preprocess.py)
+BASE_DIR = Path(__file__).parent
+ML_DIR = Path(__file__).parent
 
 def load_training_data():
     """
-    Load preprocessed training and test data
+    Load preprocessed training and test data from preprocess.py outputs
+    All preprocessing (scaling, encoding, feature selection) already done
     Returns: X_train, y_train, X_test, y_test, feature_names
     """
     print("[Train] Loading preprocessed data...")
@@ -63,63 +70,77 @@ def load_training_data():
     train_df = pd.read_csv(ML_DIR / 'train_data.csv')
     test_df = pd.read_csv(ML_DIR / 'test_data.csv')
     
-    # Load feature names
-    with open(ML_DIR / 'feature_names.json', 'r') as f:
+    # Load feature metadata from preprocess.py
+    with open(ML_DIR / 'feature_info.json', 'r') as f:
         feature_info = json.load(f)
     
+    # Use selected features from preprocessing (already selected by SelectKBest)
     feature_names = feature_info['selected_features']
     
-    # Separate features and target
+    print(f"  - Loaded {len(feature_names)} selected features from preprocessing")
+    print(f"  - Features: {feature_names}")
+    
+    # Separate features and target (all preprocessing already applied)
     X_train = train_df[feature_names].values
     y_train = train_df['fit'].values
     X_test = test_df[feature_names].values
     y_test = test_df['fit'].values
     
-    print(f"  - Train: {X_train.shape[0]} samples × {X_train.shape[1]} features")
+    print(f"\n  - Train: {X_train.shape[0]} samples × {X_train.shape[1]} features")
     print(f"  - Test: {X_test.shape[0]} samples × {X_test.shape[1]} features")
-    print(f"  - Train class distribution: fit=1 ({y_train.sum()}, {y_train.mean()*100:.1f}%)")
-    print(f"  - Test class distribution: fit=1 ({y_test.sum()}, {y_test.mean()*100:.1f}%)")
+    print(f"  - Train class distribution: fit=1 ({y_train.sum()}, {y_train.mean()*100:.1f}%), fit=0 ({len(y_train)-y_train.sum()}, {(1-y_train.mean())*100:.1f}%)")
+    print(f"  - Test class distribution: fit=1 ({y_test.sum()}, {y_test.mean()*100:.1f}%), fit=0 ({len(y_test)-y_test.sum()}, {(1-y_test.mean())*100:.1f}%)")
     
     return X_train, y_train, X_test, y_test, feature_names
 
 def perform_hyperparameter_tuning(X_train, y_train):
     """
-    Hyperparameter tuning via GridSearchCV
+    Conservative hyperparameter tuning for small dataset (205 samples)
     
     Search Strategy:
-    - Exhaustive grid search (small parameter space)
-    - 5-fold cross-validation (balances bias-variance)
-    - Scoring: f1_macro (harmonic mean of precision/recall per class, then averaged)
-      Why: Handles imbalanced classes better than accuracy
-      Formula: F1_macro = (1/K) Σ(k=1 to K) 2·(precision_k · recall_k)/(precision_k + recall_k)
+    - 5-fold cross-validation (preserves class distribution)
+    - Scoring: f1_macro (balanced precision/recall)
+    - Conservative parameters to prevent overfitting on 205 samples
     
-    Parameter Grid:
-    - n_estimators: Number of trees [50, 100, 200]
-      More trees → lower variance, but diminishing returns >100
-    - max_depth: Max tree depth [5, 10, 15]
-      Deeper → more complex splits, but risk overfitting
-    - min_samples_split: Min samples to split node [2, 5, 10]
-      Higher → more conservative splits, prevents overfitting
+    Parameter Grid (Small Dataset Rules):
+    - n_estimators: [50, 100]
+      Fewer trees for small data, diminishing returns beyond 100
     
-    Why GridSearch over RandomSearch:
-    Small parameter space (3×3×3=27 combinations) allows exhaustive search
-    Ensures global optimum within grid (no stochastic sampling bias)
+    - max_depth: [3, 5, 7]
+      Based on log2(n_samples) ≈ log2(205) ≈ 7.7
+      Conservative to prevent memorization
+    
+    - min_samples_split: [5, 10, 15]
+      Approx n_samples/40 = 205/40 ≈ 5
+      Forces trees to generalize, not overfit
+    
+    - min_samples_leaf: [3, 5, 7]
+      Approx n_samples/100 = 205/100 ≈ 2-3
+      Ensures leaf nodes have sufficient support
+    
+    No class_weight: 34.6% minority is naturally balanced
     """
-    print("\n[Train] Starting hyperparameter tuning...")
+    print("\n[Train] Starting hyperparameter tuning (small dataset strategy)...")
     print("  - Method: GridSearchCV")
     print("  - Cross-validation: 5-fold")
-    print("  - Scoring: f1_macro (balanced for imbalanced classes)")
+    print("  - Scoring: f1_macro")
+    print(f"  - Dataset size: {len(X_train)} samples (conservative parameters)")
     
-    # Define parameter grid
+    # Conservative parameter grid for 205 samples
     param_grid = {
-        'n_estimators': [50, 100, 200],        # Number of trees
-        'max_depth': [5, 10, 15],               # Tree depth
-        'min_samples_split': [2, 5, 10],        # Min samples to split
-        'class_weight': ['balanced'],           # Handle imbalance
+        'n_estimators': [50, 100],              # Fewer trees for small data
+        'max_depth': [3, 5, 7],                 # log2(205) ≈ 7-8
+        'min_samples_split': [5, 10, 15],       # n_samples/40 ≈ 5
+        'min_samples_leaf': [3, 5, 7],          # n_samples/100 ≈ 2-3
         'random_state': [RANDOM_STATE]          # Reproducibility
     }
     
-    print(f"  - Parameter grid: {len(param_grid['n_estimators']) * len(param_grid['max_depth']) * len(param_grid['min_samples_split'])} combinations")
+    n_combinations = (len(param_grid['n_estimators']) * 
+                      len(param_grid['max_depth']) * 
+                      len(param_grid['min_samples_split']) * 
+                      len(param_grid['min_samples_leaf']))
+    print(f"  - Parameter grid: {n_combinations} combinations")
+    print(f"  - No class_weight (minority class 34.6% is naturally balanced)")
     
     # Initialize base model
     rf_base = RandomForestClassifier(random_state=RANDOM_STATE)
@@ -130,7 +151,7 @@ def perform_hyperparameter_tuning(X_train, y_train):
         param_grid=param_grid,
         cv=5,                      # 5-fold cross-validation
         scoring='f1_macro',        # Evaluation metric
-        n_jobs=-1,                 # Use all CPU cores
+        n_jobs=1,                  # Single job for small dataset
         verbose=1,                 # Progress updates
         return_train_score=True    # Track train scores for overfitting detection
     )
@@ -158,7 +179,7 @@ def perform_hyperparameter_tuning(X_train, y_train):
     results_df = pd.DataFrame(grid_search.cv_results_)
     top_5 = results_df.nlargest(5, 'mean_test_score')[
         ['param_n_estimators', 'param_max_depth', 'param_min_samples_split', 
-         'mean_test_score', 'std_test_score']
+         'param_min_samples_leaf', 'mean_test_score', 'std_test_score']
     ]
     print(top_5.to_string(index=False))
     
@@ -218,11 +239,13 @@ def evaluate_model(model, X_train, y_train, X_test, y_test, feature_names):
     print(f"{'ROC-AUC':<20} {train_auc:>19.4f} {test_auc:>19.4f} {abs(train_auc-test_auc):>9.4f}")
     print("="*70)
     
-    # Check for overfitting
-    if train_f1 - test_f1 > 0.10:
-        print("\n⚠️  WARNING: Potential overfitting detected (train-test F1 gap > 0.10)")
+    # Check for overfitting (stricter threshold for small dataset)
+    f1_gap = train_f1 - test_f1
+    if f1_gap > 0.07:
+        print(f"\nWARNING: Potential overfitting detected (train-test F1 gap = {f1_gap:.4f} > 0.07)")
+        print("   Small dataset (205 samples) requires gap < 0.07 for good generalization")
     else:
-        print("\n✓ Good generalization (train-test F1 gap < 0.10)")
+        print(f"\nGood generalization (train-test F1 gap = {f1_gap:.4f} < 0.07)")
     
     # Detailed classification report (per-class metrics)
     print("\n[Train] Classification Report (Test Set):")
@@ -277,21 +300,23 @@ def evaluate_model(model, X_train, y_train, X_test, y_test, feature_names):
 
 def train_model():
     """
-    Main training pipeline
+    Main training pipeline for small dataset (205 samples)
     
     Steps:
-    1. Load preprocessed training and test data
-    2. Perform hyperparameter tuning via GridSearchCV
+    1. Load preprocessed data (scaling, encoding, feature selection already done)
+    2. Perform conservative hyperparameter tuning via GridSearchCV
     3. Train final model with best parameters
     4. Evaluate on train and test sets
     5. Save trained model and metrics
+    
+    No preprocessing in this file - all done in preprocess.py
     
     Output:
     - rf_model.pkl: Trained Random Forest model (for predict.py)
     - training_metrics.json: Performance metrics (for documentation)
     """
     print("\n" + "="*70)
-    print("MEAL RECOMMENDATION ML PIPELINE - MODEL TRAINING")
+    print("FOOD RECOMMENDATION ML PIPELINE - MODEL TRAINING")
     print("="*70 + "\n")
     
     # Step 1: Load data
@@ -327,19 +352,32 @@ def train_model():
     print("\n" + "="*70)
     print("TRAINING COMPLETE!")
     print("="*70)
-    print(f"Model: Random Forest Classifier")
+    print(f"Model: Random Forest Classifier (Small Dataset Optimized)")
+    print(f"Dataset: 205 samples, 34.6% minority class")
     print(f"Best parameters: n_estimators={best_params['n_estimators']}, "
           f"max_depth={best_params['max_depth']}, "
-          f"min_samples_split={best_params['min_samples_split']}")
-    print(f"Test F1-score (macro): {metrics['test']['f1_macro']:.4f}")
-    print(f"Test ROC-AUC: {metrics['test']['roc_auc']:.4f}")
+          f"min_samples_split={best_params['min_samples_split']}, "
+          f"min_samples_leaf={best_params['min_samples_leaf']}")
+    print(f"\nTest Metrics:")
+    print(f"  - F1-score (macro): {metrics['test']['f1_macro']:.4f}")
+    print(f"  - ROC-AUC: {metrics['test']['roc_auc']:.4f}")
+    print(f"  - Accuracy: {metrics['test']['accuracy']:.4f}")
     
-    # Check if meets target (F1 > 0.80)
-    if metrics['test']['f1_macro'] >= 0.80:
-        print("\n✓ Model meets target performance (F1 > 0.80)")
+    # Generalization check
+    f1_gap = metrics['train']['f1_macro'] - metrics['test']['f1_macro']
+    print(f"\nGeneralization:")
+    print(f"  - Train-Test F1 gap: {f1_gap:.4f}")
+    if f1_gap <= 0.07:
+        print(f"  Good generalization (gap <= 0.07 for small dataset)")
     else:
-        print(f"\n⚠️  Model below target (F1 = {metrics['test']['f1_macro']:.4f} < 0.80)")
-        print("   Consider: More data, feature engineering, or ensemble methods")
+        print(f"  Overfitting detected (gap > 0.07)")
+    
+    # Performance target check (F1 > 0.75 for small dataset)
+    if metrics['test']['f1_macro'] >= 0.75:
+        print("\nModel meets target performance (F1 > 0.75 for 205 samples)")
+    else:
+        print(f"\nModel below target (F1 = {metrics['test']['f1_macro']:.4f} < 0.75)")
+        print("   Consider: More diverse data collection or alternative features")
     
     print("\nNext step: Run predict.py to test predictions")
     print("="*70 + "\n")

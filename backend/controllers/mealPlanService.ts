@@ -9,6 +9,16 @@ import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ML Pipeline Paths
+const ML_DIR = path.join(__dirname, '../ml');
+const PROCESSED_DATA_PATH = path.join(ML_DIR, 'processed_data.csv');
+const TRAINING_METRICS_PATH = path.join(ML_DIR, 'training_metrics.json');
+
+// ML data storage
+let mlFoods: any[] = [];
+let mlMetrics: any = null;
+let mlFitFoods: any[] = []; // Only ML-recommended (fit=1) foods
+
 // Initialize Ollama client with optimized settings
 const ollama = new Ollama({
   host: process.env.OLLAMA_HOST || 'http://localhost:11434',
@@ -51,6 +61,26 @@ const warmUpModel = async () => {
   }
 };
 
+// Get ML-recommended foods by category and dietary restrictions
+const getMLFitFoods = (category: string, restrictions: string[] = []) => {
+  let foods = mlFitFoods.filter(f => 
+    f.category && f.category.toLowerCase().includes(category.toLowerCase())
+  );
+  
+  // Apply dietary filters
+  if (restrictions.includes('vegan') || restrictions.includes('Vegan')) {
+    foods = foods.filter(f => f.is_vegan === 1);
+  }
+  if (restrictions.includes('gluten-free') || restrictions.includes('Gluten Free')) {
+    foods = foods.filter(f => f.is_glutenfree === 1);
+  }
+  if (restrictions.includes('nut-free') || restrictions.includes('Nut Allergy')) {
+    foods = foods.filter(f => f.is_nutfree === 1);
+  }
+  
+  return foods;
+};
+
 // Generate cache key for meal plan requests
 const generateCacheKey = (profile: any, budget: string, preferences: string, varietyMode: string) => {
   return JSON.stringify({ profile, budget, preferences, varietyMode });
@@ -80,77 +110,59 @@ const setCachedResponse = (cacheKey: string, data: any) => {
   }
 };
 
-// Initialize warm-up
+// Load ML processed foods for meal planning
+const loadMLFoods = async () => {
+  if (!fs.existsSync(PROCESSED_DATA_PATH)) {
+    console.warn('[MealPlan] ML data not found. Run: python backend/ml/preprocess.py');
+    return;
+  }
+  
+  const csv = await import('csv-parser');
+  return new Promise<void>((resolve) => {
+    const rows: any[] = [];
+    fs.createReadStream(PROCESSED_DATA_PATH)
+      .pipe(csv.default())
+      .on('data', (row: any) => {
+        const food = {
+          food_name: row.food_name,
+          category: row.category,
+          calories: parseFloat(row.calories) || 0,
+          protein: parseFloat(row.protein) || 0,
+          carbs: parseFloat(row.carbs) || 0,
+          fat: parseFloat(row.fat) || 0,
+          iron: parseFloat(row.iron) || 0,
+          vitamin_c: parseFloat(row.vitamin_c) || 0,
+          nutrient_density: parseFloat(row.nutrient_density) || 0,
+          micronutrient_score: parseFloat(row.micronutrient_score) || 0,
+          is_glutenfree: parseInt(row.is_glutenfree) || 0,
+          is_nutfree: parseInt(row.is_nutfree) || 0,
+          is_vegan: parseInt(row.is_vegan) || 0,
+          fit: parseInt(row.fit) || 0, // ML fitness label
+        };
+        rows.push(food);
+      })
+      .on('end', () => {
+        mlFoods = rows;
+        mlFitFoods = rows.filter(f => f.fit === 1); // Only ML-recommended foods
+        console.log(`[MealPlan] Loaded ${mlFoods.length} foods from ML pipeline (${mlFitFoods.length} fit)`);
+        
+        // Load metrics
+        try {
+          const metricsData = fs.readFileSync(TRAINING_METRICS_PATH, 'utf-8');
+          mlMetrics = JSON.parse(metricsData);
+          console.log(`[MealPlan] ML Model: F1=${(mlMetrics.metrics.test.f1_macro * 100).toFixed(1)}%`);
+        } catch (err) {
+          console.warn('[MealPlan] Could not load ML metrics');
+        }
+        
+        resolve();
+      });
+  });
+};
+
+// Initialize warm-up and ML data loading
 warmUpModel();
-
-// Generate realistic day plan based on user profile (simulates Gemma output)
-function generateRealisticDayPlan(day: string, profile: any, preferences: string) {
-  const isVegan = profile.dietaryRestrictions?.includes('vegan');
-  const isWeightLoss = profile.primaryGoal === 'weight_loss';
-  const wantsLightDinners = preferences.includes('light dinner');
-  
-  // Realistic vegan meals that would come from Gemma
-  const veganMeals = {
-    breakfast: [
-      { name: "Quinoa Breakfast Bowl with Berries", calories: 320, protein: 14, carbs: 48, fat: 9, ingredients: ["quinoa", "almond milk", "mixed berries", "chia seeds", "maple syrup"] },
-      { name: "Avocado Toast with Nutritional Yeast", calories: 280, protein: 12, carbs: 35, fat: 12, ingredients: ["sourdough bread", "avocado", "nutritional yeast", "cherry tomatoes", "hemp seeds"] },
-      { name: "Green Protein Smoothie Bowl", calories: 290, protein: 18, carbs: 42, fat: 8, ingredients: ["spinach", "banana", "plant protein powder", "almond butter", "coconut flakes"] }
-    ],
-    lunch: [
-      { name: "Mediterranean Chickpea Buddha Bowl", calories: isWeightLoss ? 380 : 450, protein: 18, carbs: 52, fat: 14, ingredients: ["chickpeas", "quinoa", "roasted vegetables", "tahini", "pumpkin seeds"] },
-      { name: "Red Lentil Curry with Brown Rice", calories: isWeightLoss ? 350 : 420, protein: 20, carbs: 48, fat: 12, ingredients: ["red lentils", "coconut milk", "turmeric", "vegetables", "brown rice"] },
-      { name: "Hummus and Veggie Wrap", calories: isWeightLoss ? 340 : 400, protein: 16, carbs: 45, fat: 13, ingredients: ["whole wheat tortilla", "hummus", "cucumber", "bell peppers", "sprouts"] }
-    ],
-    dinner: wantsLightDinners ? [
-      { name: "Miso Soup with Tofu and Seaweed", calories: 180, protein: 12, carbs: 15, fat: 8, ingredients: ["miso paste", "silken tofu", "wakame seaweed", "green onions", "mushrooms"] },
-      { name: "Zucchini Noodles with Cashew Pesto", calories: 220, protein: 10, carbs: 18, fat: 14, ingredients: ["zucchini", "cashews", "basil", "nutritional yeast", "garlic"] },
-      { name: "Roasted Vegetable Salad", calories: 200, protein: 8, carbs: 22, fat: 10, ingredients: ["mixed greens", "roasted beets", "walnuts", "balsamic vinegar", "olive oil"] }
-    ] : [
-      { name: "Stuffed Bell Peppers with Quinoa", calories: 320, protein: 16, carbs: 38, fat: 12, ingredients: ["bell peppers", "quinoa", "black beans", "corn", "cilantro"] },
-      { name: "Mushroom and Lentil Bolognese", calories: 350, protein: 20, carbs: 42, fat: 12, ingredients: ["brown lentils", "mushrooms", "whole wheat pasta", "tomato sauce", "herbs"] },
-      { name: "Thai Coconut Curry with Vegetables", calories: 380, protein: 14, carbs: 45, fat: 16, ingredients: ["coconut milk", "curry paste", "mixed vegetables", "jasmine rice", "lime"] }
-    ]
-  };
-
-  const regularMeals = {
-    breakfast: [
-      { name: "Greek Yogurt Parfait with Granola", calories: 350, protein: 20, carbs: 40, fat: 12, ingredients: ["greek yogurt", "homemade granola", "berries", "honey", "almonds"] },
-      { name: "Scrambled Eggs with Whole Grain Toast", calories: 320, protein: 18, carbs: 28, fat: 16, ingredients: ["free-range eggs", "whole grain bread", "butter", "chives", "tomato"] },
-      { name: "Protein Smoothie with Spinach", calories: 300, protein: 25, carbs: 35, fat: 8, ingredients: ["whey protein", "banana", "spinach", "almond milk", "peanut butter"] }
-    ],
-    lunch: [
-      { name: "Grilled Chicken Caesar Salad", calories: isWeightLoss ? 380 : 450, protein: 35, carbs: 20, fat: 18, ingredients: ["chicken breast", "romaine lettuce", "parmesan", "caesar dressing", "croutons"] },
-      { name: "Turkey and Avocado Wrap", calories: isWeightLoss ? 360 : 420, protein: 28, carbs: 35, fat: 16, ingredients: ["turkey breast", "avocado", "whole wheat tortilla", "lettuce", "tomato"] },
-      { name: "Salmon Poke Bowl", calories: isWeightLoss ? 400 : 480, protein: 32, carbs: 38, fat: 20, ingredients: ["fresh salmon", "brown rice", "edamame", "cucumber", "sesame dressing"] }
-    ],
-    dinner: wantsLightDinners ? [
-      { name: "Grilled White Fish with Steamed Vegetables", calories: 280, protein: 30, carbs: 15, fat: 12, ingredients: ["cod fillet", "broccoli", "carrots", "lemon", "herbs"] },
-      { name: "Chicken and Vegetable Soup", calories: 250, protein: 25, carbs: 20, fat: 8, ingredients: ["chicken breast", "mixed vegetables", "bone broth", "herbs", "barley"] },
-      { name: "Shrimp and Cucumber Salad", calories: 220, protein: 28, carbs: 12, fat: 8, ingredients: ["shrimp", "cucumber", "mixed greens", "lemon vinaigrette", "dill"] }
-    ] : [
-      { name: "Grilled Ribeye with Sweet Potato", calories: 450, protein: 35, carbs: 35, fat: 18, ingredients: ["ribeye steak", "roasted sweet potato", "asparagus", "garlic butter", "rosemary"] },
-      { name: "Herb-Crusted Chicken Thighs", calories: 420, protein: 32, carbs: 25, fat: 22, ingredients: ["chicken thighs", "herb crust", "roasted vegetables", "olive oil", "thyme"] },
-      { name: "Pork Tenderloin with Wild Rice", calories: 400, protein: 30, carbs: 40, fat: 14, ingredients: ["pork tenderloin", "wild rice pilaf", "green beans", "mushroom sauce", "sage"] }
-    ]
-  };
-
-  const mealSet = isVegan ? veganMeals : regularMeals;
-  
-  // Select meals with variety
-  const dayIndex = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(day);
-  const breakfast = mealSet.breakfast[dayIndex % mealSet.breakfast.length];
-  const lunch = mealSet.lunch[dayIndex % mealSet.lunch.length];
-  const dinner = mealSet.dinner[dayIndex % mealSet.dinner.length];
-
-  return {
-    day: day,
-    meals: [
-      { type: "breakfast", ...breakfast },
-      { type: "lunch", ...lunch },
-      { type: "dinner", ...dinner }
-    ]
-  };
-}
+loadMLFoods();
 
 // Generate weekly meal plan via Ollama with streaming support
 export const generateMealPlanStream = async (req: Request, res: Response) => {
@@ -276,41 +288,54 @@ Return ONLY valid JSON:
         for (const mealType of mealTypes) {
           console.log(`[MealPlan] 🤖 Calling REAL Gemma AI for ${day} ${mealType}...`);
           
-          const mealPrompt = `Create ${mealType} for ${day}: ${goal}, ${restrictions.length > 0 ? restrictions.join('/') : 'no restrictions'}, ${budgetText}.
+          // Get ML-recommended foods for this meal type with variety
+          // Rotate through different foods to avoid repetition
+          const startIndex = (i * mealTypes.indexOf(mealType) + mealTypes.indexOf(mealType) * 3) % mlFitFoods.length;
+          const mlSuggestions = mlFitFoods.slice(startIndex, startIndex + 10).map(f => 
+            `${f.food_name} (${f.category}, ${f.calories}kcal, ${f.protein}g protein)`
+          ).join(', ');
+          
+          // Get category-specific foods for better variety
+          const categoryMap: any = {
+            'breakfast': ['fruit', 'grain', 'dairy'],
+            'lunch': ['protein', 'vegetable', 'grain'],
+            'dinner': ['protein', 'vegetable']
+          };
+          const relevantCategories = categoryMap[mealType] || [];
+          const categoryFoods = mlFitFoods.filter(f => 
+            relevantCategories.some((cat: string) => f.category && f.category.toLowerCase().includes(cat))
+          ).slice(0, 8);
+          
+          const categorySuggestions = categoryFoods.length > 0 
+            ? `\n[Category-Specific Options]: ${categoryFoods.map(f => f.food_name).join(', ')}`
+            : '';
+          
+          // Simple prompt focusing on ML-recommended ingredients
+          const mealPrompt = `Create ${mealType} for ${goal}.
 
-Return ONLY valid JSON (no markdown, no explanation):
-{
-  "type": "${mealType}",
-  "name": "Specific meal name",
-  "calories": 300,
-  "protein": 15,
-  "carbs": 35,
-  "fat": 10,
-  "ingredients": ["ingredient1", "ingredient2", "ingredient3"]
-}`;
+Base Ingredients (ML-recommended): ${mlSuggestions}
+
+Use these healthy ingredients. ${restrictions.length > 0 ? restrictions.join('/') + ' only.' : ''} Return JSON only:
+{"type":"${mealType}","name":"meal name","calories":300,"protein":15,"carbs":35,"fat":10,"ingredients":["item1","item2","item3"]}`;
 
           let meal;
           try {
             const gemmaStartTime = Date.now();
-            const response = await Promise.race([
-              ollama.chat({
-                model: getMealPlanModel(),
-                messages: [
-                  { role: 'system', content: 'You are a nutritionist. Return ONLY valid JSON, no markdown, no explanation.' },
-                  { role: 'user', content: mealPrompt },
-                ],
-                options: { 
-                  num_predict: 120,
-                  temperature: 0.4,
-                  num_ctx: 512,
-                  top_k: 20,
-                  top_p: 0.9,
-                },
-              }),
-              new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Gemma timeout after 60s')), 60000)
-              )
-            ]);
+            // NO TIMEOUT - Let Gemma complete naturally
+            const response = await ollama.chat({
+              model: getMealPlanModel(),
+              messages: [
+                { role: 'system', content: 'Nutritionist. JSON only.' },
+                { role: 'user', content: mealPrompt },
+              ],
+              options: { 
+                num_predict: 100,
+                temperature: 0.5,
+                num_ctx: 512,
+                top_k: 30,
+                top_p: 0.9,
+              },
+            });
             
             const gemmaTime = Date.now() - gemmaStartTime;
             const content = (response as any)?.message?.content || '';
@@ -319,23 +344,38 @@ Return ONLY valid JSON (no markdown, no explanation):
             
             // Parse meal from Gemma response
             try {
-              // Try to extract JSON from markdown code blocks
               const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
               const jsonString = jsonMatch ? jsonMatch[1] : content;
               meal = JSON.parse(jsonString.trim());
               console.log(`[MealPlan] ✅ Successfully parsed Gemma JSON for ${day} ${mealType}`);
             } catch (parseError) {
-              console.log(`[MealPlan] ⚠️ Failed to parse Gemma response, using fallback`);
-              console.log(`[MealPlan] Parse error: ${parseError}`);
-              const fallbackDay = generateRealisticDayPlan(day, profile, preferences);
-              meal = fallbackDay.meals.find((m: any) => m.type === mealType) || fallbackDay.meals[0];
+              console.log(`[MealPlan] ⚠️ Parse error, using simple default`);
+              // Use simple default from ML foods
+              const mlFood = mlFitFoods[Math.floor(Math.random() * mlFitFoods.length)];
+              meal = {
+                type: mealType,
+                name: `${mlFood.food_name} Bowl`,
+                calories: mlFood.calories,
+                protein: mlFood.protein,
+                carbs: mlFood.carbs || 30,
+                fat: mlFood.fat || 10,
+                ingredients: [mlFood.food_name, "mixed vegetables", "olive oil"]
+              };
             }
             
           } catch (gemmaError: any) {
             console.log(`[MealPlan] ❌ Gemma error: ${gemmaError.message}`);
-            console.log(`[MealPlan] Using fallback for ${day} ${mealType}`);
-            const fallbackDay = generateRealisticDayPlan(day, profile, preferences);
-            meal = fallbackDay.meals.find((m: any) => m.type === mealType) || fallbackDay.meals[0];
+            // Use simple ML-based default
+            const mlFood = mlFitFoods[Math.floor(Math.random() * mlFitFoods.length)];
+            meal = {
+              type: mealType,
+              name: `${mlFood.food_name} Bowl`,
+              calories: mlFood.calories,
+              protein: mlFood.protein,
+              carbs: mlFood.carbs || 30,
+              fat: mlFood.fat || 10,
+              ingredients: [mlFood.food_name, "mixed vegetables", "olive oil"]
+            };
           }
           
           dayMeals.push(meal);
@@ -380,43 +420,10 @@ Return ONLY valid JSON (no markdown, no explanation):
       } catch (error: any) {
         console.error(`[MealPlan] Error generating ${day}:`, error);
         
-        // Use fallback generation on timeout or error
-        console.log(`[MealPlan] Using fallback generation for ${day}...`);
-        const dayPlan = generateRealisticDayPlan(day, profile, preferences);
-        
-        // Calculate day totals
-        const dayTotals = dayPlan.meals.reduce(
-          (acc: any, meal: any) => ({
-            totalCalories: acc.totalCalories + (meal.calories || 0),
-            totalProtein: acc.totalProtein + (meal.protein || 0),
-            totalCarbs: acc.totalCarbs + (meal.carbs || 0),
-            totalFat: acc.totalFat + (meal.fat || 0),
-          }),
-          { totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0 }
-        );
-
-        const completeDayPlan = {
-          ...dayPlan,
-          ...dayTotals,
-        };
-
-        // Send each meal individually for progressive rendering (fallback case)
-        for (const meal of dayPlan.meals) {
-          res.write(`data: ${JSON.stringify({ 
-            type: 'meal', 
-            meal: meal
-          })}\n\n`);
-          
-          // Small delay between meals for visual effect
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-
-        completedDays.push(completeDayPlan);
-
-        // Send day complete signal
+        // Skip this day and continue
         res.write(`data: ${JSON.stringify({ 
-          type: 'day_complete',
-          progress: Math.round(((i + 1) / days.length) * 100)
+          type: 'error',
+          message: `Failed to generate ${day}, skipping...`
         })}\n\n`);
       }
     }
@@ -511,6 +518,15 @@ export const generateMealPlan = async (req: Request, res: Response) => {
       ? 'Keep meals consistent across days (meal prep friendly, some repeats allowed)'
       : 'Maximize variety with different meals each day';
 
+    // Get ML-recommended foods for context
+    const mlTopFoods = mlFitFoods.slice(0, 15).map(f => 
+      `${f.food_name} (${f.calories}kcal, ${f.protein}g protein, ML score: ${f.nutrient_density.toFixed(2)})`
+    ).join('\n- ');
+    
+    const mlContext = mlFitFoods.length > 0 
+      ? `\n\n**ML-Recommended Ingredients (use these when possible):**\n- ${mlTopFoods}\n\nOur ML model analyzed 205 foods and rated these as optimal for nutrition.`
+      : '';
+    
     const userPrompt = `Generate a complete 7-day meal plan for the following profile:
 
 **User Profile:**
@@ -524,7 +540,7 @@ export const generateMealPlan = async (req: Request, res: Response) => {
 **Meal Plan Requirements:**
 - Weekly Budget: ${budgetText}
 - Special Preferences: ${preferences || 'None'}
-- Variety Mode: ${varietyText}
+- Variety Mode: ${varietyText}${mlContext}
 
 **Output Format (strict JSON):**
 {
@@ -610,22 +626,23 @@ Generate the meal plan now in JSON format only:`;
     
     let response;
     try {
+      // NO TIMEOUT - Let Ollama complete full week meal plan
       response = await ollama.chat({
-      model: getMealPlanModel(),
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      options: { 
-        num_predict: 3000, // Reduced from 4000 for faster response
-        temperature: 0.3,  // Reduced from 0.7 for more consistent output
-        num_ctx: 2048,     // Reduced context window for speed
-        top_k: 20,         // Limit token selection for speed
-        top_p: 0.8,        // Focus on most likely tokens
-        repeat_penalty: 1.1, // Prevent repetition
-        seed: -1,          // Random seed for variety
-      },
-    });
+        model: getMealPlanModel(),
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        options: { 
+          num_predict: 3000,
+          temperature: 0.4,
+          num_ctx: 2048,
+          top_k: 25,
+          top_p: 0.85,
+          repeat_penalty: 1.1,
+          seed: -1,
+        },
+      });
     } catch (ollamaError: any) {
       console.error('[MealPlan] Ollama connection error:', ollamaError);
       return res.status(500).json({
@@ -716,13 +733,35 @@ export const swapMeal = async (req: Request, res: Response) => {
   try {
     const { mealName, mealType, day, profile, budget, preferences } = req.body;
 
-    const systemPrompt = `You are a professional nutritionist. Suggest meal alternatives that fit the user's profile. Respond with valid JSON only.`;
+    const systemPrompt = `You are a friendly nutrition assistant. Suggest tasty meal alternatives using similar food categories. Be creative with combinations. Respond with valid JSON only.`;
 
-    const userPrompt = `Suggest 3 alternative meals for "${mealName}" (${mealType}) that fit this profile:
+    // Get ML-fit alternatives from SAME category as original meal
+    // This ensures variety while maintaining nutritional profile
+    const originalCategory = mealName.toLowerCase().includes('salad') ? 'vegetable' 
+      : mealName.toLowerCase().includes('chicken') || mealName.toLowerCase().includes('beef') ? 'protein'
+      : mealName.toLowerCase().includes('pasta') || mealName.toLowerCase().includes('rice') ? 'grain'
+      : 'mixed';
+    
+    const similarFoods = mlFitFoods.filter(f => {
+      const category = f.category ? f.category.toLowerCase() : '';
+      return originalCategory === 'mixed' || category.includes(originalCategory) || category.includes('vegetable');
+    }).slice(0, 12);
+    
+    const mlAlternatives = similarFoods.map(f => 
+      `${f.food_name} (${f.category}, ${f.calories}kcal, ${f.protein}g protein)`
+    ).join(', ');
+    
+    const userPrompt = `Create 3 delicious alternative meals for "${mealName}" (${mealType}).
+
+User Profile:
 - Goal: ${profile.primaryGoal || 'general health'}
 - Dietary Restrictions: ${profile.dietaryRestrictions?.join(', ') || 'None'}
 - Budget: ${budget || '$50-100/week'}
 - Preferences: ${preferences || 'None'}
+
+[Similar Nutritious Ingredients]: ${mlAlternatives}
+
+IMPORTANT: Use ingredients from the list above to create SIMILAR but DIFFERENT meals. Keep the same meal type (${mealType}) and similar calorie/protein range, but make each alternative unique and tasty.
 
 Output format (JSON only):
 {
@@ -742,6 +781,7 @@ Output format (JSON only):
     // Ensure model is warmed up
     await warmUpModel();
     
+    // NO TIMEOUT - Let Ollama suggest similar foods to completion
     const response = await ollama.chat({
       model: getMealPlanModel(),
       messages: [
@@ -749,11 +789,11 @@ Output format (JSON only):
         { role: 'user', content: userPrompt },
       ],
       options: { 
-        num_predict: 600,  // Reduced for faster response
-        temperature: 0.4,  // Reduced for consistency
-        num_ctx: 1024,     // Smaller context
-        top_k: 15,
-        top_p: 0.8,
+        num_predict: 400,
+        temperature: 0.5,
+        num_ctx: 1024,
+        top_k: 20,
+        top_p: 0.85,
       },
     });
 
@@ -810,6 +850,7 @@ Example:
     // Ensure model is warmed up
     await warmUpModel();
     
+    // NO TIMEOUT - Let preference extraction complete
     const response = await ollama.chat({
       model: getMealPlanModel(),
       messages: [
@@ -817,10 +858,10 @@ Example:
         { role: 'user', content: userPrompt },
       ],
       options: { 
-        num_predict: 250,  // Reduced for speed
-        temperature: 0.3,  // Lower for consistency
-        num_ctx: 1024,     // Smaller context
-        top_k: 15,
+        num_predict: 200,
+        temperature: 0.3,
+        num_ctx: 1024,
+        top_k: 20,
         top_p: 0.8,
       },
     });
@@ -947,7 +988,11 @@ export const generateInsights = async (req: Request, res: Response) => {
     const proteinAlignment = Math.max(0, 100 - Math.abs(avgDailyProtein - targetProtein) / targetProtein * 100);
     const alignment = Math.round((calorieAlignment + proteinAlignment) / 2);
 
-    const systemPrompt = `You are a nutrition analyst. Analyze meal plans and provide actionable suggestions. Respond with JSON only.`;
+    const mlInfo = mlMetrics 
+      ? ` (ML Model: ${mlMetrics.model}, F1: ${(mlMetrics.metrics.test.f1_macro * 100).toFixed(1)}%)`
+      : '';
+    
+    const systemPrompt = `You are a nutrition analyst powered by machine learning${mlInfo}. Analyze meal plans and provide actionable suggestions. Respond with JSON only.`;
 
     const planSummary = plan.days.map((d: any) => 
       `${d.day}: ${d.meals.map((m: any) => `${m.type}=${m.name} (${m.calories}kcal)`).join(', ')}`

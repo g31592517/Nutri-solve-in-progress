@@ -37,9 +37,9 @@ async function testStreamingGeneration() {
   let statusUpdates = [];
   
   try {
-    console.log('✓ Sending request to /meal-plan/generate-stream');
-    console.log('✓ Profile:', JSON.stringify(testProfile, null, 2));
-    console.log('✓ Preferences:', JSON.stringify(testPreferences, null, 2));
+    console.log(' Sending request to /meal-plan/generate-stream');
+    console.log(' Profile:', JSON.stringify(testProfile, null, 2));
+    console.log(' Preferences:', JSON.stringify(testPreferences, null, 2));
     
     const response = await fetch(`${API_URL}/meal-plan/generate-stream`, {
       method: 'POST',
@@ -56,8 +56,8 @@ async function testStreamingGeneration() {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
-    console.log('✓ Connection established (SSE)');
-    console.log('✓ Waiting for streaming data...\n');
+    console.log(' Connection established (SSE)');
+    console.log(' Waiting for streaming data...\n');
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -76,7 +76,7 @@ async function testStreamingGeneration() {
           const data = line.slice(6).trim();
           
           if (data === '[DONE]') {
-            console.log('\n✓ Stream completed');
+            console.log('\n Stream completed');
             break;
           }
 
@@ -85,12 +85,12 @@ async function testStreamingGeneration() {
             
             if (event.type === 'status') {
               statusUpdates.push(event);
-              console.log(`📊 Status: ${event.message} (${event.progress}%)`);
+              console.log(` Status: ${event.message} (${event.progress}%)`);
             } else if (event.type === 'day_complete') {
               dayCount++;
               days.push(event.day);
               const dayTime = ((Date.now() - startTime) / 1000).toFixed(2);
-              console.log(`✅ Day ${dayCount}/7: ${event.day.day} completed in ${dayTime}s`);
+              console.log(` Day ${dayCount}/7: ${event.day.day} completed in ${dayTime}s`);
               console.log(`   - Meals: ${event.day.meals.length}`);
               console.log(`   - Calories: ${event.day.totalCalories}`);
               console.log(`   - Protein: ${event.day.totalProtein}g\n`);
@@ -103,7 +103,7 @@ async function testStreamingGeneration() {
               throw new Error(event.message);
             }
           } catch (parseError) {
-            console.warn('⚠️  Failed to parse event:', data);
+            console.warn('  Failed to parse event:', data);
           }
         }
       }
@@ -112,12 +112,12 @@ async function testStreamingGeneration() {
     const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
     
     console.log('\n' + '='.repeat(60));
-    console.log('📊 Test Results Summary');
+    console.log(' Test Results Summary');
     console.log('='.repeat(60));
-    console.log(`✓ Total time: ${totalTime}s`);
-    console.log(`✓ Days generated: ${dayCount}/7`);
-    console.log(`✓ Status updates: ${statusUpdates.length}`);
-    console.log(`✓ Average time per day: ${(totalTime / dayCount).toFixed(2)}s`);
+    console.log(` Total time: ${totalTime}s`);
+    console.log(` Days generated: ${dayCount}/7`);
+    console.log(` Status updates: ${statusUpdates.length}`);
+    console.log(` Average time per day: ${(totalTime / dayCount).toFixed(2)}s`);
     
     // Validate results
     console.log('\n📋 Validation Checks:');
@@ -137,7 +137,7 @@ async function testStreamingGeneration() {
     ];
     
     checks.forEach(check => {
-      console.log(`${check.pass ? '✅' : '❌'} ${check.name}`);
+      console.log(`${check.pass ? '' : ''} ${check.name}`);
     });
     
     const allPassed = checks.every(c => c.pass);
@@ -146,12 +146,12 @@ async function testStreamingGeneration() {
       console.log('\n🎉 All validation checks passed!');
       return true;
     } else {
-      console.log('\n⚠️  Some validation checks failed');
+      console.log('\n  Some validation checks failed');
       return false;
     }
     
   } catch (error) {
-    console.error('\n❌ Test failed:', error.message);
+    console.error('\n Test failed:', error.message);
     console.error('Stack:', error.stack);
     return false;
   }
@@ -164,7 +164,7 @@ async function testNonStreamingGeneration() {
   const startTime = Date.now();
   
   try {
-    console.log('✓ Sending request to /meal-plan/generate');
+    console.log(' Sending request to /meal-plan/generate');
     
     const response = await fetch(`${API_URL}/meal-plan/generate`, {
       method: 'POST',
@@ -184,14 +184,14 @@ async function testNonStreamingGeneration() {
       throw new Error(data.error || 'Request failed');
     }
 
-    console.log(`✓ Response received in ${totalTime}s`);
-    console.log(`✓ Days: ${data.mealPlan.days.length}`);
-    console.log(`✓ Weekly calories: ${data.mealPlan.weeklyTotals.calories}`);
-    console.log(`✓ Cached: ${data.cached ? 'Yes' : 'No'}`);
+    console.log(` Response received in ${totalTime}s`);
+    console.log(` Days: ${data.mealPlan.days.length}`);
+    console.log(` Weekly calories: ${data.mealPlan.weeklyTotals.calories}`);
+    console.log(` Cached: ${data.cached ? 'Yes' : 'No'}`);
     
     return true;
   } catch (error) {
-    console.error('❌ Test failed:', error.message);
+    console.error(' Test failed:', error.message);
     return false;
   }
 }
@@ -201,7 +201,7 @@ async function testCaching() {
   console.log('-'.repeat(60));
   
   try {
-    console.log('✓ First request (should not be cached)...');
+    console.log(' First request (should not be cached)...');
     const start1 = Date.now();
     const response1 = await fetch(`${API_URL}/meal-plan/generate`, {
       method: 'POST',
@@ -215,7 +215,7 @@ async function testCaching() {
     const time1 = ((Date.now() - start1) / 1000).toFixed(2);
     console.log(`  Time: ${time1}s, Cached: ${data1.cached ? 'Yes' : 'No'}`);
     
-    console.log('\n✓ Second request (should be cached)...');
+    console.log('\n Second request (should be cached)...');
     const start2 = Date.now();
     const response2 = await fetch(`${API_URL}/meal-plan/generate`, {
       method: 'POST',
@@ -230,17 +230,17 @@ async function testCaching() {
     console.log(`  Time: ${time2}s, Cached: ${data2.cached ? 'Yes' : 'No'}`);
     
     const speedup = (parseFloat(time1) / parseFloat(time2)).toFixed(1);
-    console.log(`\n✓ Cache speedup: ${speedup}x faster`);
+    console.log(`\n Cache speedup: ${speedup}x faster`);
     
     if (data2.cached && parseFloat(time2) < parseFloat(time1)) {
-      console.log('✅ Caching works correctly!');
+      console.log(' Caching works correctly!');
       return true;
     } else {
-      console.log('⚠️  Caching may not be working as expected');
+      console.log('  Caching may not be working as expected');
       return false;
     }
   } catch (error) {
-    console.error('❌ Test failed:', error.message);
+    console.error(' Test failed:', error.message);
     return false;
   }
 }
@@ -251,17 +251,17 @@ async function testModelVerification() {
   
   try {
     // Check backend logs for model references
-    console.log('✓ Checking for gemma:2b usage...');
+    console.log(' Checking for gemma:2b usage...');
     console.log('  (Check backend console for model warm-up logs)');
     console.log('  Expected: "[MealPlan] Warming up gemma:2b model..."');
     console.log('  Expected: "[MealPlan] Calling Gemma for Monday..."');
-    console.log('\n✓ Checking for phi3 references...');
+    console.log('\n Checking for phi3 references...');
     console.log('  Run: grep -r "phi3" backend/controllers/');
     console.log('  Expected: No results');
     
     return true;
   } catch (error) {
-    console.error('❌ Test failed:', error.message);
+    console.error(' Test failed:', error.message);
     return false;
   }
 }
@@ -271,7 +271,7 @@ async function testErrorHandling() {
   console.log('-'.repeat(60));
   
   try {
-    console.log('✓ Testing with invalid profile...');
+    console.log(' Testing with invalid profile...');
     const response = await fetch(`${API_URL}/meal-plan/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -284,21 +284,21 @@ async function testErrorHandling() {
     const data = await response.json();
     
     if (!response.ok && data.error) {
-      console.log(`✅ Error handled correctly: ${data.error}`);
+      console.log(` Error handled correctly: ${data.error}`);
       return true;
     } else {
-      console.log('⚠️  Expected error response');
+      console.log('  Expected error response');
       return false;
     }
   } catch (error) {
-    console.error('❌ Test failed:', error.message);
+    console.error(' Test failed:', error.message);
     return false;
   }
 }
 
 // Run all tests
 async function runAllTests() {
-  console.log('\n🚀 Starting automated tests...\n');
+  console.log('\n Starting automated tests...\n');
   
   const results = {
     streaming: false,
@@ -333,24 +333,24 @@ async function runAllTests() {
   console.log('\n' + '='.repeat(60));
   console.log('🏁 Final Test Results');
   console.log('='.repeat(60));
-  console.log(`${results.streaming ? '✅' : '❌'} Streaming Generation`);
-  console.log(`${results.nonStreaming ? '✅' : '❌'} Non-Streaming Generation`);
-  console.log(`${results.caching ? '✅' : '❌'} Response Caching`);
-  console.log(`${results.modelVerification ? '✅' : '❌'} Model Verification`);
-  console.log(`${results.errorHandling ? '✅' : '❌'} Error Handling`);
+  console.log(`${results.streaming ? '' : ''} Streaming Generation`);
+  console.log(`${results.nonStreaming ? '' : ''} Non-Streaming Generation`);
+  console.log(`${results.caching ? '' : ''} Response Caching`);
+  console.log(`${results.modelVerification ? '' : ''} Model Verification`);
+  console.log(`${results.errorHandling ? '' : ''} Error Handling`);
   
   const passed = Object.values(results).filter(r => r).length;
   const total = Object.keys(results).length;
   
   console.log('\n' + '='.repeat(60));
-  console.log(`📊 Overall: ${passed}/${total} tests passed`);
+  console.log(` Overall: ${passed}/${total} tests passed`);
   console.log('='.repeat(60));
   
   if (passed === total) {
     console.log('\n🎉 All tests passed! Meal planner is working correctly.');
     process.exit(0);
   } else {
-    console.log('\n⚠️  Some tests failed. Please review the results above.');
+    console.log('\n  Some tests failed. Please review the results above.');
     process.exit(1);
   }
 }
@@ -367,17 +367,17 @@ async function checkBackend() {
 
 // Main execution
 (async () => {
-  console.log('🔍 Checking if backend is running...');
+  console.log(' Checking if backend is running...');
   const isRunning = await checkBackend();
   
   if (!isRunning) {
-    console.error('❌ Backend is not running on http://localhost:5000');
+    console.error(' Backend is not running on http://localhost:5000');
     console.error('   Please start the backend first:');
     console.error('   cd backend && npm run dev');
     process.exit(1);
   }
   
-  console.log('✅ Backend is running\n');
+  console.log(' Backend is running\n');
   
   await runAllTests();
 })();

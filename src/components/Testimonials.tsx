@@ -7,7 +7,7 @@ const Testimonials = () => {
       name: "Sarah Johnson",
       role: "Fitness Enthusiast",
       content:
-        "NutriEmpower transformed how I approach nutrition. The AI recommendations are spot-on, and I've never felt healthier!",
+        "NutriSolve transformed how I approach nutrition. The AI recommendations are spot-on, and I've never felt healthier!",
       rating: 5,
       avatar: "👩‍💼",
     },
@@ -23,7 +23,7 @@ const Testimonials = () => {
       name: "Emily Rodriguez",
       role: "Wellness Coach",
       content:
-        "I recommend NutriEmpower to all my clients. The combination of AI technology and expert guidance is unmatched.",
+        "I recommend NutriSolve to all my clients. The combination of AI technology and expert guidance is unmatched.",
       rating: 5,
       avatar: "👩‍⚕️",
     },

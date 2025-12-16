@@ -31,16 +31,16 @@ const Footer = () => {
           <div className="lg:col-span-2">
             <a href="#home" className="flex items-center gap-2 font-montserrat font-bold text-2xl mb-4">
               <Leaf className="h-8 w-8 text-primary" />
-              <span>NutriEmpower</span>
+              <span>NutriSolve</span>
             </a>
             <p className="font-inter text-background/80 mb-6 max-w-sm">
               Empowering sustainable wellness through personalized nutrition plans,
               expert insights, and community support.
             </p>
             <div className="space-y-2">
-              <a href="mailto:support@nutriempower.com" className="flex items-center gap-2 text-background/80 hover:text-primary transition-colors font-inter">
+              <a href="mailto:support@nutrisolve.com" className="flex items-center gap-2 text-background/80 hover:text-primary transition-colors font-inter">
                 <Mail className="h-4 w-4" />
-                <span>support@nutriempower.com</span>
+                <span>support@nutrisolve.com</span>
               </a>
               <a href="tel:+15551234567" className="flex items-center gap-2 text-background/80 hover:text-primary transition-colors font-inter">
                 <Phone className="h-4 w-4" />
@@ -105,7 +105,7 @@ const Footer = () => {
         <div className="border-t border-background/20 pt-8">
           <div className="flex flex-col md:flex-row justify-between items-center gap-4">
             <p className="font-inter text-background/60 text-sm">
-              © {currentYear} NutriEmpower. All rights reserved.
+              © {currentYear} NutriSolve. All rights reserved.
             </p>
             <div className="flex items-center gap-6">
               <a href="#" className="text-background/60 hover:text-primary transition-colors">

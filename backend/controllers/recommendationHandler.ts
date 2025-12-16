@@ -280,25 +280,53 @@ export const getRecommendationsWithChat = async (req: Request, res: Response) =>
 
     contextLines.push('[End of Rankings]');
     contextLines.push('');
-    contextLines.push('Please provide a friendly, personalized response based on these recommendations.');
+    contextLines.push('Please provide a friendly, personalized response explaining these recommendations and how they support the user\'s goal.');
 
     const contextPrompt = contextLines.join('\n');
 
-    // Import Ollama chat function dynamically to avoid circular dependencies
-    // Note: You may need to refactor chatController to export sendChatMessage
-    // For now, we'll return the context and let frontend handle Ollama call
-    // or implement Ollama call here
+    // Integrate with Ollama for natural language response
+    console.log('[RecController] Sending ML results to Ollama for natural language generation...');
+    
+    let ollamaResponse = null;
+    try {
+      // Import Ollama dynamically
+      const { Ollama } = await import('ollama');
+      const ollama = new Ollama({
+        host: process.env.OLLAMA_HOST || 'http://localhost:11434',
+      });
+      
+      const response = await ollama.chat({
+        model: 'gemma:2b',
+        messages: [
+          { 
+            role: 'system', 
+            content: 'You are a nutrition coach. Explain meal recommendations in a friendly, motivating way. Be concise (2-3 paragraphs).' 
+          },
+          { 
+            role: 'user', 
+            content: contextPrompt 
+          },
+        ],
+        options: {
+          num_predict: 200,
+          temperature: 0.7,
+          num_ctx: 1024,
+        },
+      });
+      
+      ollamaResponse = response?.message?.content || null;
+      console.log('[RecController] Ollama response generated successfully');
+    } catch (ollamaError: any) {
+      console.warn('[RecController] Ollama unavailable, returning ML results only:', ollamaError.message);
+    }
 
-    console.log('[RecController] ML recommendations generated successfully');
-
-    // Return combined response
+    // Return combined response with ML rankings + Ollama explanation
     return res.status(200).json({
       success: true,
       data: {
         recommendations: mlResult,
-        ollamaContext: contextPrompt,
-        // If Ollama integration is implemented:
-        // chatResponse: ollamaResponse
+        mlContext: contextPrompt,
+        chatResponse: ollamaResponse,
       },
       timestamp: new Date().toISOString(),
     });

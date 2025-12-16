@@ -17,7 +17,7 @@ const About = () => {
         <div className="grid lg:grid-cols-2 gap-12 items-center">
           <div className="animate-fade-in">
             <div className="inline-block bg-primary/10 text-primary px-4 py-2 rounded-full mb-6 font-inter font-medium">
-              About NutriEmpower
+              About NutriSolve
             </div>
             <h2 className="font-montserrat font-bold text-4xl md:text-5xl text-foreground mb-6">
               Empowering Your{" "}
@@ -26,7 +26,7 @@ const About = () => {
               </span>
             </h2>
             <p className="font-inter text-lg text-muted-foreground mb-6 leading-relaxed">
-              NutriEmpower combines cutting-edge AI technology with proven
+              NutriSolve combines cutting-edge AI technology with proven
               nutritional science to deliver personalized guidance that fits your
               lifestyle. Whether you're managing a health condition, pursuing
               fitness goals, or simply want to eat better, we're here to support

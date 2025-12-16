@@ -23,7 +23,7 @@ export const AuthModal = ({ isOpen, onClose, defaultTab = "signin" }: AuthModalP
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="text-2xl font-montserrat font-bold text-center">
-            {activeView === "forgot" ? "Reset Password" : "Welcome to NutriEmpower"}
+            {activeView === "forgot" ? "Reset Password" : "Welcome to NutriSolve"}
           </DialogTitle>
         </DialogHeader>
 

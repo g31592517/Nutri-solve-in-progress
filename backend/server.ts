@@ -29,16 +29,16 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/nutrisolve
 
 // Startup banner
 console.log('\n' + '='.repeat(60));
-console.log('🍽️  NutriSolve Backend Server Starting...');
+console.log('NutriSolve Backend Server Starting...');
 console.log('='.repeat(60) + '\n');
 
 // Middleware
-console.log('⚙️  [Setup] Configuring middleware...');
+console.log('[Setup] Configuring middleware...');
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
-console.log('   ✓ Helmet security headers enabled');
+console.log('   Helmet security headers enabled');
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -77,11 +77,11 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-console.log('   ✓ CORS configured for development');
+console.log('   CORS configured for development');
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-console.log('   ✓ Body parsers configured (10MB limit)');
+console.log('   Body parsers configured (10MB limit)');
 
 // Set server timeout for long-running AI operations (10 minutes)
 app.use((req, res, next) => {
@@ -89,7 +89,7 @@ app.use((req, res, next) => {
   res.setTimeout(600000); // 10 minutes
   next();
 });
-console.log('   ✓ Request timeout set to 10 minutes for AI operations');
+console.log('   Request timeout set to 10 minutes for AI operations');
 
 // Rate limiting
 const limiter = rateLimit({
@@ -98,33 +98,33 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again later.',
 });
 app.use('/api', limiter);
-console.log('   ✓ Rate limiting: 100 requests per 15 minutes\n');
+console.log('   Rate limiting: 100 requests per 15 minutes\n');
 
 // Connect to MongoDB
-console.log('🗄️  [Database] Connecting to MongoDB...');
+console.log('[Database] Connecting to MongoDB...');
 console.log(`   URI: ${MONGO_URI.replace(/\/\/.*@/, '//<credentials>@')}`);
 
 mongoose
   .connect(MONGO_URI)
   .then(() => {
-    console.log('   ✅ MongoDB connected successfully');
+    console.log('   MongoDB connected successfully');
     console.log(`   Database: ${mongoose.connection.name}`);
     console.log(`   Host: ${mongoose.connection.host}:${mongoose.connection.port}\n`);
   })
   .catch((err) => {
-    console.error('   ❌ MongoDB connection failed:', err.message);
+    console.error('   MongoDB connection failed:', err.message);
     console.error('   Please ensure MongoDB is running and accessible\n');
     process.exit(1);
   });
 
 // Load USDA data
-console.log('📊 [Data] Loading USDA nutrition database...');
+console.log('[Data] Loading USDA nutrition database...');
 loadUSDAData()
   .then(() => {
-    console.log('   ✅ USDA data loaded successfully\n');
+    console.log('   USDA data loaded successfully\n');
   })
   .catch((err) => {
-    console.warn('   ⚠️  Failed to load USDA data:', err.message);
+    console.warn('   Failed to load USDA data:', err.message);
     console.warn('   AI chat may have limited nutrition data\n');
   });
 
@@ -141,18 +141,18 @@ app.use((req, res, next) => {
 });
 
 // Routes
-console.log('🛣️  [Routes] Registering API endpoints...');
+console.log('[Routes] Registering API endpoints...');
 app.use('/api/auth', authRoutes);
-console.log('   ✓ /api/auth - Authentication routes');
+console.log('   /api/auth - Authentication routes');
 
 app.use('/api', apiRoutes);
-console.log('   ✓ /api - General API routes');
+console.log('   /api - General API routes');
 
 app.use('/api', recommendationRoutes);
-console.log('   ✓ /api - Recommendation routes');
+console.log('   /api - Recommendation routes');
 
 app.use('/api/meal-plan', mealPlanRoutes);
-console.log('   ✓ /api/meal-plan - Meal planning routes\n');
+console.log('   /api/meal-plan - Meal planning routes\n');
 
 // Health check
 app.get('/health', (req: Request, res: Response) => {
@@ -175,17 +175,17 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 // Start server
 app.listen(PORT, () => {
   console.log('='.repeat(60));
-  console.log('🚀 Server Started Successfully!');
+  console.log('Server Started Successfully!');
   console.log('='.repeat(60));
-  console.log(`\n📍 Server URL: http://localhost:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`⏰ Started at: ${new Date().toLocaleString()}`);
-  console.log(`\n📋 Available Endpoints:`);
+  console.log(`\nServer URL: http://localhost:${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Started at: ${new Date().toLocaleString()}`);
+  console.log(`\nAvailable Endpoints:`);
   console.log(`   • Health Check:  http://localhost:${PORT}/health`);
   console.log(`   • Auth API:      http://localhost:${PORT}/api/auth`);
   console.log(`   • Main API:      http://localhost:${PORT}/api`);
   console.log(`   • Meal Plans:    http://localhost:${PORT}/api/meal-plan`);
-  console.log(`\n💡 Press Ctrl+C to stop the server`);
+  console.log(`\nPress Ctrl+C to stop the server`);
   console.log('='.repeat(60) + '\n');
 });
 
